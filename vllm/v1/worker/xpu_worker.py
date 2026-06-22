@@ -3,6 +3,10 @@
 import gc
 import os
 
+# Set CCL env vars before any CCL initialization
+os.environ.setdefault("CCL_ZE_ENABLE", "0")
+os.environ.setdefault("FI_PROVIDER", "tcp")
+
 import torch
 
 from vllm.config import VllmConfig
@@ -89,6 +93,8 @@ class XPUWorker(Worker):
             "LOCAL_WORLD_SIZE", str(self.parallel_config.world_size)
         )
         os.environ["CCL_ATL_TRANSPORT"] = ENV_CCL_ATL_TRANSPORT
+        os.environ["CCL_ZE_ENABLE"] = "0"
+        os.environ["FI_PROVIDER"] = os.getenv("FI_PROVIDER", "tcp")
         os.environ["LOCAL_WORLD_SIZE"] = ENV_LOCAL_WORLD_SIZE
         os.environ["LOCAL_RANK"] = str(self.local_rank)
 
@@ -101,7 +107,7 @@ class XPUWorker(Worker):
         )
 
         # global all_reduce needed for overall oneccl warm up
-        if torch.distributed.is_xccl_available():
+        if torch.distributed.is_xccl_available() and self.parallel_config.world_size > 1:
             torch.distributed.all_reduce(torch.zeros(1).xpu())
 
         if self.use_v2_model_runner:
