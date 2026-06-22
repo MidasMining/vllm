@@ -1,0 +1,53 @@
+============================================
+TurboQuant Phase 2 Stage 1b: Paged KV Cache
+============================================
+
+=== Phase 2 Stage 1b Benchmarks ===
+Device: Intel(R) Arc(TM) Pro B70 Graphics
+Global mem: 32656 MB
+
+GQA config: 16 Q heads, 4 KV heads (ratio 4:1)
+
+                config total_tok      TQ(us)    FP16(us)     ratio  OH_14K(ms)
+------------------------------------------------------------------------------
+           bs16_14K_b1     14000       529.6       316.2     1.675x       0.213
+           bs32_14K_b1     14000       413.6       356.6     1.160x       0.057
+           bs16_60K_b1     60000      1450.4      1512.3     0.959x      -0.014
+           bs32_60K_b1     60000      1416.3      1832.1     0.773x      -0.097
+           bs16_14K_b2     28000       670.8       621.6     1.079x       0.025
+           bs16_14K_b4     56000      1119.0      1055.9     1.060x       0.016
+           bs16_14K_b8    112000      1911.8      1899.8     1.006x       0.002
+        bs16_mixed1_b4     38000       822.3       794.1     1.035x       0.010
+        bs16_mixed2_b4    128000      2591.2      2744.6     0.944x      -0.017
+
+============================================
+BLOCK SIZE SWEEP (batch=1)
+============================================
+       bs16_14K_b1  TQ=529.6 us  FP16=316.2 us  ratio=1.675x
+       bs32_14K_b1  TQ=413.6 us  FP16=356.6 us  ratio=1.160x
+       bs16_60K_b1  TQ=1450.4 us  FP16=1512.3 us  ratio=0.959x
+       bs32_60K_b1  TQ=1416.3 us  FP16=1832.1 us  ratio=0.773x
+
+============================================
+BATCH SIZE SWEEP (block_size=16, 14K/seq)
+============================================
+       bs16_14K_b1  TQ=529.6 us  FP16=316.2 us  ratio=1.675x
+       bs16_14K_b2  TQ=670.8 us  FP16=621.6 us  ratio=1.079x
+       bs16_14K_b4  TQ=1119.0 us  FP16=1055.9 us  ratio=1.060x
+       bs16_14K_b8  TQ=1911.8 us  FP16=1899.8 us  ratio=1.006x
+
+============================================
+MIXED SEQUENCE LENGTHS (block_size=16, batch=4)
+============================================
+    bs16_mixed1_b4  TQ=822.3 us  FP16=794.1 us  ratio=1.035x
+    bs16_mixed2_b4  TQ=2591.2 us  FP16=2744.6 us  ratio=0.944x
+
+============================================
+CONTIGUOUS (Stage 1) vs PAGED (Stage 1b)
+============================================
+Stage 1 reference (contiguous, n_heads=40, no GQA):
+  14K: TQ=482.9 us, FP16=736.2 us, ratio=0.66x
+  60K: TQ=1979.6 us, FP16=3074.2 us, ratio=0.64x
+Stage 1b paged (block_size=16, GQA 16:4):
+  14K: TQ=529.6 us, FP16=316.2 us, ratio=1.675x
+  60K: TQ=1450.4 us, FP16=1512.3 us, ratio=0.959x

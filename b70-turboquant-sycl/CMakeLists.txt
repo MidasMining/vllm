@@ -36,3 +36,8 @@ target_link_options(tq_rotated_bench PRIVATE ${SYCL_LINK_FLAGS})
 add_executable(tq_fused_bench src/tq_fused_bench.cpp)
 target_compile_options(tq_fused_bench PRIVATE ${SYCL_COMPILE_FLAGS} -O2)
 target_link_options(tq_fused_bench PRIVATE ${SYCL_LINK_FLAGS})
+
+# --- Phase 2 Stage 1b: Paged KV cache benchmark ---
+add_executable(tq_paged_bench src/tq_paged_bench.cpp)
+target_compile_options(tq_paged_bench PRIVATE ${SYCL_COMPILE_FLAGS} -O2)
+target_link_options(tq_paged_bench PRIVATE ${SYCL_LINK_FLAGS})
