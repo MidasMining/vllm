@@ -70,9 +70,9 @@ Previously downloaded and deleted: Qwen3.6-27B (52 GB, garbage output), Qwen3.6-
 | triton-xpu | 3.7.1 | pip |
 | Python venv | ~/vllm-native | Python 3.12 |
 
-**Serve scripts:** `~/serve-native.sh` (dense 27B), `~/serve-moe.sh` (MoE 35B-A3B eager), `~/serve-moe-xpugraph-full.sh` (MoE 35B-A3B XPU Graph)
+**Serve scripts:** `~/serve-native.sh` (dense 27B), `~/serve-moe.sh` (MoE 35B-A3B eager), `~/serve-moe-xpugraph-full.sh` (MoE 35B-A3B XPU Graph), `~/serve-moe-tq.sh` (MoE 35B-A3B TurboQuant)
 
-**Current server:** MoE 35B-A3B on port 8000, 16K context, FP8 KV cache, XPU Graph FULL mode, 0.90 gpu-mem-util (389K KV tokens)
+**Current server:** MoE 35B-A3B on port 8000, 16K context, **TurboQuant 4bit_nc KV cache**, XPU Graph FULL_DECODE_ONLY mode, 0.90 gpu-mem-util (615K KV tokens)
 
 **Key env vars:** `VLLM_WORKER_MULTIPROC_METHOD=spawn ZE_AFFINITY_MASK=0 VLLM_TARGET_DEVICE=xpu CCL_ZE_ENABLE=0 FI_PROVIDER=tcp VLLM_XPU_ENABLE_XPU_GRAPH=1`
 
@@ -532,16 +532,79 @@ Tests whether Stage 1's speedup survives paged KV cache, GQA head mapping, batch
 
 **Results:** `~/turboquant-sycl/phase2_stage1b_results.txt`
 
+### TurboQuant SYCL Phase 2 Stage 2 — vLLM Production Integration (Stage 2)
+
+First production integration of TurboQuant KV cache compression in vLLM serving on the B70.
+
+**Discovery:** Upstream vLLM already contains a complete TurboQuant backend:
+- Triton-based store kernel (WHT rotation + MSE quantize + pack)
+- Triton-based decode kernel (split-KV tiled scoring in rotated space)
+- `TurboQuantConfig` with presets, `TQFullAttentionSpec`, XPU platform routing
+- Only change needed: `--kv-cache-dtype turboquant_4bit_nc` in serve script
+
+**Integration:** Zero code changes required — existing upstream TQ backend works on XPU out of the box.
+- Triton kernels compiled via triton-xpu 3.7.1 without modification
+- XPU Graph capture succeeded (FULL_DECODE_ONLY due to GDN linear attention backend)
+- Flash Attention v2 used for prefill, Triton TQ kernel for decode
+- WHT rotation via 256×256 matmul (oneMKL GEMM) works correctly
+
+**Serve script:** `~/serve-moe-tq.sh` (identical to `serve-moe-xpugraph-full.sh` but with `--kv-cache-dtype turboquant_4bit_nc`)
+
+**KV Cache Capacity:**
+
+| KV Cache Type | Tokens | vs FP16 | vs FP8 |
+|---------------|--------|---------|--------|
+| FP16 (auto) | 219,028 | 1.0x | — |
+| FP8 (fp8_e5m2) | 388,747 | 1.77x | 1.0x |
+| **TQ (turboquant_4bit_nc)** | **615,570** | **2.81x** | **1.58x** |
+
+TQ compression is 1.58x vs FP8 (not the theoretical 3.9x per-layer) because TQ only compresses the 10 full-attention layers; the 30 linear attention (GDN) layers use standard cache format.
+
+**Head-to-head benchmark: TQ vs FP8 (same model, same hardware, same benchmark script)**
+
+Single-stream decode (1024 tokens generated):
+
+| KV Cache | tok/s | Ratio |
+|----------|-------|-------|
+| FP8 | 69.1 | 1.00x |
+| **TQ 4bit_nc** | **68.4** | **0.99x** |
+
+Streaming TTFT + decode:
+
+| Prompt Size | FP8 TTFT | TQ TTFT | FP8 tok/s | TQ tok/s |
+|-------------|----------|---------|-----------|----------|
+| Short (~30 tok) | 0.12s | 0.11s | 71.0 | 69.8 |
+| Medium (~500 tok) | 0.25s | 0.20s | 70.6 | 69.8 |
+| Long (~2K tok) | 0.25s | 0.24s | 70.0 | 67.2 |
+
+Concurrent throughput (128 tokens/request):
+
+| Concurrent | FP8 agg tok/s | TQ agg tok/s | TQ/FP8 |
+|------------|---------------|--------------|--------|
+| 1 | 66.7 | 64.9 | 0.97x |
+| 4 | 162.8 | 154.5 | 0.95x |
+| 8 | 288.0 | 283.9 | 0.99x |
+
+**Key Finding #16: TurboQuant provides 58% more KV cache capacity with <5% throughput cost in production vLLM serving on B70.**
+
+The throughput similarity is expected: attention decode is a small fraction of total MoE inference time (256-expert feed-forward dominates). TQ's 3.8x bandwidth reduction in attention is invisible at the serving level because attention is already non-bottleneck.
+
+**Architecture note:** Block size was set to 4096 tokens by vLLM to align with GDN (linear attention) page size requirements. Our microbenchmarks showed block_size=32 is optimal for TQ, but the hybrid model architecture forces this larger block size. Despite this, TQ delivers the full capacity benefit.
+
+**Log files:**
+- TQ server startup: `~/tq-server.log` on rig
+- FP8 baseline: `~/fp8-server.log` on rig
+
 ### V100 Comparison (Definition of Success)
 
-| Metric | B70 | V100 | Delta |
-|--------|-----|------|-------|
-| Quality | 20/22 (90.9%) | 22/21 (105%) | Different rubric versions (22-check vs 21-check) |
-| Decode c=1 @ 14K | **68.6 t/s** | 49.4 t/s | **+39%** |
-| KV cache | 388,747 (FP8) | 155,000 | **+151%** |
-| Peak concurrent | 820.3 t/s | — | — |
-| BWA-MEM2 | Pending scoring | 18/30 (60%) | — |
-| Power | ~80W | 250-300W | **~3.5x more efficient** |
+| Metric | B70 (FP8) | B70 (TQ) | V100 | B70 TQ vs V100 |
+|--------|-----------|----------|------|----------------|
+| Quality | 20/22 (90.9%) | Same model | 22/21 (105%) | Different rubric |
+| Decode c=1 | **68.6 t/s** | **68.4 t/s** | 49.4 t/s | **+38%** |
+| KV cache | 388,747 | **615,570** | 155,000 | **+297%** |
+| Peak concurrent | 820.3 t/s | ~800 t/s (est) | — | — |
+| BWA-MEM2 | Pending | — | 18/30 (60%) | — |
+| Power | ~80W | ~80W | 250-300W | **~3.5x more efficient** |
 
 ### Earlier Results (pre-standardized)
 
@@ -741,6 +804,9 @@ source /opt/intel/oneapi/setvars.sh --force
 
 # Start vLLM server — MoE with XPU Graph (fastest, 73 tok/s c=1)
 nohup bash ~/serve-moe-xpugraph-full.sh > ~/b70-vllm/results/serve.log 2>&1 &
+
+# Start vLLM server — MoE with TurboQuant KV (58% more KV capacity, ~same speed)
+nohup bash ~/serve-moe-tq.sh > /tmp/tq-server.log 2>&1 &
 
 # Start vLLM server — MoE eager mode (slower but more context)
 nohup bash ~/serve-moe.sh > ~/b70-vllm/results/serve.log 2>&1 &
