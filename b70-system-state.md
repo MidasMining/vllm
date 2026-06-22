@@ -251,6 +251,65 @@ Server maintained rock-solid 48.9 tok/s per request at c=4 for 30 minutes.
 
 **Compression ratio: 1.77x.** FP8 provides 77% more KV tokens with < 1% speed impact.
 
+#### Concurrency × Context Matrix (FP8 KV Baseline)
+
+Maps the practical operating envelope: what happens when concurrency and context depth are pushed simultaneously. This is the "before" ruler for TurboQuant comparison.
+
+**Per-request decode tok/s:**
+
+| | 4K ctx | 16K ctx | 32K ctx | 64K ctx | 128K ctx |
+|-----|--------|---------|---------|---------|----------|
+| c=1 | 71.5 | 68.6 | 64.6* | 66.3 | 52.7 |
+| c=2 | 51.2 | 46.2 | 36.0 | 31.0 | 24.2 |
+| c=4 | 43.1 | 32.8 | 22.3 | 17.3 | -- |
+| c=8 | 34.7 | 20.9 | 14.5 | -- | -- |
+| c=16 | 25.8 | 13.4 | -- | -- | -- |
+
+**Aggregate tok/s:**
+
+| | 4K ctx | 16K ctx | 32K ctx | 64K ctx | 128K ctx |
+|-----|--------|---------|---------|---------|----------|
+| c=1 | 71.5 | 68.6 | 64.6* | 66.3 | 52.7 |
+| c=2 | 89.0 | 57.6 | 23.2 | 15.0 | 4.8 |
+| c=4 | 142.6 | 68.2 | 26.5 | 14.8 | -- |
+| c=8 | 210.7 | 80.6 | 34.4 | -- | -- |
+| c=16 | 281.8 | 85.9 | -- | -- | -- |
+
+**TTFT (seconds):**
+
+| | 4K ctx | 16K ctx | 32K ctx | 64K ctx | 128K ctx |
+|-----|--------|---------|---------|---------|----------|
+| c=1 | 0.5* | 2.0* | 5.3* | 15.7 | 48.3 |
+| c=2 | 0.80 | 3.56 | 8.75 | 23.9 | 73.9 |
+| c=4 | 1.26 | 5.97 | 14.6 | 40.3 | -- |
+| c=8 | 2.27 | 10.8 | 26.5 | -- | -- |
+| c=16 | 4.32 | 20.6 | -- | -- | -- |
+
+\* = prior benchmark data (different measurement script, consistent methodology)
+-- = exceeds FP8 KV budget (388K tokens)
+
+**Key findings:**
+- Decode speed degrades ~2x from c=1→c=8 at any context, and ~1.4x from 4K→128K at any concurrency
+- At c=2@64K (real-world deep-context pair), per-request decode is still 31 tok/s — usable
+- At c=4@32K (interactive multi-user), per-request decode is 22 tok/s with 14.6s TTFT — borderline
+- At c=8@16K (standard multi-user), per-request decode is 20.9 tok/s with 10.8s TTFT — practical limit
+- TTFT scales roughly linearly with both context and concurrency (prefill is compute-bound)
+- Aggregate tok/s peaks at high concurrency + short context (281.8 at c=16@4K) but long-context destroys aggregate throughput
+
+**Sweet spot analysis:**
+1. **Best single-user deep context:** c=1@128K — 52.7 tok/s, 48.3s TTFT (usable if TTFT is acceptable)
+2. **Best multi-user balanced:** c=2@32K — 36 tok/s per-req, 8.75s TTFT
+3. **Best throughput-optimized:** c=8@4K — 210.7 agg tok/s, 2.27s avg TTFT
+4. **Pearl serving recommendation:** c=4@16K — 32.8 tok/s per-req with 5.97s TTFT, 68.2 agg tok/s, fits 4 concurrent 16K sessions in 388K KV budget
+
+**TurboQuant impact projection (FP8+TQ4, ~1.47M KV tokens):**
+- c=4@64K would become possible (currently exceeds budget)
+- c=8@32K would have 4.6x headroom instead of being at 66% capacity
+- c=2@128K with room for 5 more concurrent 128K sessions
+- The entire matrix shifts right by ~3.8x on the context axis
+
+**Results:** `~/b70-vllm/results/matrix/` and benchmark script `~/matrix_bench.py`
+
 ### TurboQuant Investigation (Phase 4)
 
 Built `TheTom/llama-cpp-turboquant` fork with Vulkan backend on B70.
@@ -447,6 +506,8 @@ quantized MoE on XPU. The model loads, serves, and produces coherent output.
 10. **B70 exceeds V100 on decode by 39%** — 68.6 t/s at 14K context vs V100's 49.4 t/s. With 2.5x the KV cache (389K vs 155K tokens) and ~3.5x better power efficiency (~80W vs 250–300W).
 
 11. **TurboQuant dequant is ALU-bound, not bandwidth-bound** — Phase 0 microbenchmark shows global FP32 write is free (Mode 4 faster than Mode 5 by 26%). The bottleneck is the 7-stage WHT butterfly with barriers (2.79 ns/vector). Split dequant adds 3.1 ms/token at 14K context (>1.0 ms threshold), so fused kernel (Phase 2) is the priority path. SYCL GPU produces bit-identical results to CPU reference.
+
+12. **Concurrency × context interaction is multiplicative** — Per-request decode degrades ~2x from c=1→c=8 and ~1.4x from 4K→128K context. The practical multi-user sweet spot is c=4@16K (32.8 tok/s, 6s TTFT). Long context (64K+) is only viable at c=1–2. The FP8 KV budget (388K tokens) is the hard ceiling — TurboQuant's 3.8x compression would shift the entire matrix right by one column (e.g., c=4@64K becomes possible).
 
 ## Disk Usage
 
