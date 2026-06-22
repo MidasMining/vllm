@@ -405,6 +405,45 @@ Fusing with attention will eliminate the global write entirely and amortize WHT 
 
 Pack kernel works at 1K/4K tokens (~6-7 ns/vector, 2.2x slower than dequant). At 14K+ tokens, hits GPU TDR timeout (DEVICE_LOST) — needs kernel splitting or reduced batch sizes for large KV caches.
 
+### TurboQuant SYCL Phase 0.5 — Rotated-Space Attention (Phase 0.5)
+
+Measures the speedup from computing attention in rotated (Hadamard) space, which eliminates WHT from the per-token inner loop. Since WHT is orthogonal: `q·k = (Hq)·(Hk)` and `output = H⁻¹(Σ wᵢ·z_vᵢ)`.
+
+**Correctness: 3/3 PASS**
+
+| Test | Result | Detail |
+|------|--------|--------|
+| CPU standard vs rotated attention | PASS | Max rel error: 3.9e-7 |
+| GPU K-scores vs CPU reference | PASS | Max abs error: 5.7e-6 |
+| GPU Path D vs CPU standard attention | PASS | Max rel error: 6.9e-7 |
+
+**Benchmark: Path A (baseline dequant) vs Path D (rotated-space attention)**
+
+| n_tokens | Path A (us) | Path D (us) | Speedup | Path D est ms/tok @14K |
+|----------|------------|------------|---------|----------------------|
+| 1K | 333 | 123 | **2.70x** | 1.72 |
+| 4K | 921 | 420 | **2.19x** | 1.47 |
+| 14K | 3,037 | 1,607 | **1.89x** | 1.61 |
+| 60K | 12,995 | 6,737 | **1.93x** | 1.57 |
+| 128K | 27,711 | 14,325 | **1.93x** | 1.57 |
+
+**Path breakdown at steady state (128K):**
+
+| Component | Time (us) | ns/vec | % of Path D |
+|-----------|----------|--------|-------------|
+| Path B (K-score: unpack+codebook+dot) | 12,020 | 2.35 | 84% |
+| Path C (V-accum: unpack+codebook+acc) | 2,143 | 0.42 | 15% |
+| Reduce + WHT (40 heads) | ~162 | -- | 1% |
+
+**Key findings:**
+- **1.9x steady-state speedup** from rotated-space attention (eliminates WHT from inner loop)
+- Path B (K-scores with tree reduction) dominates at 84% — the dot-product reduction (7 barrier stages) costs almost as much as the eliminated WHT butterfly
+- Path C (V-accumulate) is very efficient at 0.42 ns/vec — sequential accumulation per thread with no barriers
+- Estimated ms/token at 14K: **1.6 ms** (down from 3.0 ms baseline) — still above 1.0 ms target
+- Phase 0.5 decision: **1.9x is significant but not sufficient alone. Proceed to Phase 2 (fused kernel) where rotated-space + fused attention will combine both wins.**
+
+**Results:** `~/turboquant-sycl/phase05_bench_results.txt`
+
 ### V100 Comparison (Definition of Success)
 
 | Metric | B70 | V100 | Delta |
@@ -509,6 +548,8 @@ quantized MoE on XPU. The model loads, serves, and produces coherent output.
 
 12. **Concurrency × context interaction is multiplicative** — Per-request decode degrades ~2x from c=1→c=8 and ~1.4x from 4K→128K context. The practical multi-user sweet spot is c=4@16K (32.8 tok/s, 6s TTFT). Long context (64K+) is only viable at c=1–2. The FP8 KV budget (388K tokens) is the hard ceiling — TurboQuant's 3.8x compression would shift the entire matrix right by one column (e.g., c=4@64K becomes possible).
 
+13. **Rotated-space attention gives 1.9x speedup over split dequant** — Phase 0.5 shows computing attention in Hadamard-rotated space eliminates WHT from the per-token inner loop, reducing dequant+attention cost from 2.71 ns/vec to 1.43 ns/vec (1.93x at steady state). K-score dot-product reduction dominates (84% of Path D cost at 2.35 ns/vec). V-accumulate is extremely cheap (0.42 ns/vec, no barriers). Estimated ms/token at 14K drops from 3.0 to 1.6 ms — significant but still above 1.0 ms target, confirming fused kernel (Phase 2) is needed.
+
 ## Disk Usage
 
 | Path | Size | What |
@@ -550,6 +591,15 @@ quantized MoE on XPU. The model loads, serves, and produces coherent output.
 - `~/turboquant-sycl/bench_results_full.txt` — full benchmark output (modes 1-5, all scales)
 - `~/turboquant-sycl/src/` — SYCL kernels and correctness tests
 - `~/turboquant-sycl/reference/` — CPU reference implementation
+
+### Phase 0.5 Results (Rotated-Space Attention)
+- `~/turboquant-sycl/phase05_bench_results.txt` — full Phase 0.5 benchmark (Paths A-D, all scales)
+- `~/turboquant-sycl/src/tq_rotated_bench.cpp` — SYCL rotated-space attention kernels + benchmark
+- `~/turboquant-sycl/reference/tq_cpu_attention.h` — CPU attention reference (standard + rotated)
+
+### Concurrency × Context Matrix
+- `~/b70-vllm/results/matrix/matrix_results.txt` — raw matrix benchmark results
+- `~/matrix_bench.py` — benchmark script
 
 ### Earlier Results
 All saved to `~/b70-vllm/results/` including:

@@ -26,3 +26,8 @@ target_link_options(tq_correctness_gpu PRIVATE ${SYCL_LINK_FLAGS})
 add_executable(tq_bench src/tq_bench.cpp)
 target_compile_options(tq_bench PRIVATE ${SYCL_COMPILE_FLAGS} -O2)
 target_link_options(tq_bench PRIVATE ${SYCL_LINK_FLAGS})
+
+# --- Phase 0.5: Rotated-space attention microbenchmark ---
+add_executable(tq_rotated_bench src/tq_rotated_bench.cpp)
+target_compile_options(tq_rotated_bench PRIVATE ${SYCL_COMPILE_FLAGS} -O2)
+target_link_options(tq_rotated_bench PRIVATE ${SYCL_LINK_FLAGS})
