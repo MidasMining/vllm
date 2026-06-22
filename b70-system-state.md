@@ -595,6 +595,40 @@ The throughput similarity is expected: attention decode is a small fraction of t
 - TQ server startup: `~/tq-server.log` on rig
 - FP8 baseline: `~/fp8-server.log` on rig
 
+#### Full TQ Preset Comparison
+
+All four upstream TQ presets tested on XPU — all work out of the box:
+
+| Config | KV Tokens | vs FP8 | c=1 tok/s | c=8 agg tok/s | Block Size |
+|--------|-----------|--------|-----------|---------------|------------|
+| FP16 (baseline) | 219,028 | 0.56x | 72.1 | — | 16 |
+| FP8 (fp8_e5m2) | 388,747 | 1.00x | 69.1 | 288.0 | 16 |
+| TQ k8v4 | 471,495 | 1.21x | 68.5 | 272.5 | 2,816 |
+| **TQ 4bit_nc** | **615,570** | **1.58x** | **68.4** | **283.9** | 4,096 |
+| TQ 3bit_nc | 613,229 | 1.58x | 67.8 | 269.9 | 5,440 |
+
+**Key Finding #17: TQ3 provides NO additional capacity over TQ4 on this hybrid model.**
+
+The reason is the GDN/mamba page alignment constraint. vLLM forces `block_size * attn_page_per_token >= mamba_page_size`. As TQ shrinks the per-token page (TQ3=396 vs TQ4=524 bytes), the block size must grow proportionally (5440 vs 4096). The GDN state is then padded to match the new (larger) block, consuming all the bytes saved by better key compression.
+
+**Memory breakdown per token (all 40 layers):**
+
+| Config | Full-attn (10 layers) | GDN (30 layers) | Total | Full-attn % |
+|--------|----------------------|-----------------|-------|-------------|
+| FP16 | 20,480 B | 5,404 B | 25,884 B | 79% |
+| FP8 | 10,240 B | 4,344 B | 14,584 B | 70% |
+| TQ4 | 5,240 B | 3,970 B | 9,210 B | 57% |
+| TQ3 | 3,960 B | 5,285 B | 9,245 B | 43% |
+
+TQ3's GDN cost (5,285 B) is 33% higher than TQ4's (3,970 B) due to the larger block alignment padding. The 1,280 B saved in full-attn keys is exactly offset by 1,315 B of extra GDN padding.
+
+**Decision: Custom SYCL TQ integration is NOT justified for this model.**
+- The capacity bottleneck is GDN/mamba page alignment, not TQ compression efficiency
+- Custom SYCL kernels would achieve the same per-element compression but hit the same GDN ceiling
+- Maximum achievable capacity (if block alignment were perfect): ~682K for TQ3, ~592K for TQ4
+- Upstream TQ4 already achieves 615K (104% of theoretical TQ4 max, benefiting from GDN padding distribution)
+- Best config: **turboquant_4bit_nc** — highest capacity, best throughput, simplest
+
 ### V100 Comparison (Definition of Success)
 
 | Metric | B70 (FP8) | B70 (TQ) | V100 | B70 TQ vs V100 |
