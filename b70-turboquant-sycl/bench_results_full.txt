@@ -1,0 +1,882 @@
+============================================
+TurboQuant SYCL Microbenchmark
+============================================
+Device:         Intel(R) Arc(TM) Pro B70 Graphics
+Max WG size:    1024
+Local mem:      131072 bytes
+Max compute:    256 CUs
+Global mem:     32656 MB
+
+--- turbo4 | 1_unpack_only | 1000 tokens ---
+mode:                   1_unpack_only
+quant_type:             turbo4
+n_tokens:               1000
+n_heads:                40
+d_head:                 128
+total_vectors:          80000
+packed_bytes:           5440000
+time_us:                168.3
+vectors_per_second:     475400773
+ns_per_vector:          2.10
+GB_s_packed_read:       32.33
+estimated_ms_per_token_14K:  2.356
+estimated_ms_per_token_60K:  10.097
+estimated_ms_per_token_128K: 21.540
+
+--- turbo3 | 1_unpack_only | 1000 tokens ---
+mode:                   1_unpack_only
+quant_type:             turbo3
+n_tokens:               1000
+n_heads:                40
+d_head:                 128
+total_vectors:          80000
+packed_bytes:           4000000
+time_us:                107.7
+vectors_per_second:     742873337
+ns_per_vector:          1.35
+GB_s_packed_read:       37.14
+estimated_ms_per_token_14K:  1.508
+estimated_ms_per_token_60K:  6.461
+estimated_ms_per_token_128K: 13.784
+
+--- turbo4 | 2_unpack_codebook | 1000 tokens ---
+mode:                   2_unpack_codebook
+quant_type:             turbo4
+n_tokens:               1000
+n_heads:                40
+d_head:                 128
+total_vectors:          80000
+packed_bytes:           5440000
+time_us:                138.0
+vectors_per_second:     579863935
+ns_per_vector:          1.72
+GB_s_packed_read:       39.43
+estimated_ms_per_token_14K:  1.931
+estimated_ms_per_token_60K:  8.278
+estimated_ms_per_token_128K: 17.659
+
+--- turbo3 | 2_unpack_codebook | 1000 tokens ---
+mode:                   2_unpack_codebook
+quant_type:             turbo3
+n_tokens:               1000
+n_heads:                40
+d_head:                 128
+total_vectors:          80000
+packed_bytes:           4000000
+time_us:                169.8
+vectors_per_second:     471226192
+ns_per_vector:          2.12
+GB_s_packed_read:       23.56
+estimated_ms_per_token_14K:  2.377
+estimated_ms_per_token_60K:  10.186
+estimated_ms_per_token_128K: 21.731
+
+--- turbo4 | 3_unpack_cb_wht | 1000 tokens ---
+mode:                   3_unpack_cb_wht
+quant_type:             turbo4
+n_tokens:               1000
+n_heads:                40
+d_head:                 128
+total_vectors:          80000
+packed_bytes:           5440000
+time_us:                417.1
+vectors_per_second:     191816959
+ns_per_vector:          5.21
+GB_s_packed_read:       13.04
+estimated_ms_per_token_14K:  5.839
+estimated_ms_per_token_60K:  25.024
+estimated_ms_per_token_128K: 53.384
+
+--- turbo3 | 3_unpack_cb_wht | 1000 tokens ---
+mode:                   3_unpack_cb_wht
+quant_type:             turbo3
+n_tokens:               1000
+n_heads:                40
+d_head:                 128
+total_vectors:          80000
+packed_bytes:           4000000
+time_us:                278.1
+vectors_per_second:     287707110
+ns_per_vector:          3.48
+GB_s_packed_read:       14.39
+estimated_ms_per_token_14K:  3.893
+estimated_ms_per_token_60K:  16.684
+estimated_ms_per_token_128K: 35.592
+
+--- turbo4 | 4_full_dequant_write | 1000 tokens ---
+mode:                   4_full_dequant_write
+quant_type:             turbo4
+n_tokens:               1000
+n_heads:                40
+d_head:                 128
+total_vectors:          80000
+packed_bytes:           5440000
+time_us:                331.5
+vectors_per_second:     241328960
+ns_per_vector:          4.14
+GB_s_packed_read:       16.41
+GB_s_fp16_write:        123.56
+estimated_ms_per_token_14K:  4.641
+estimated_ms_per_token_60K:  19.890
+estimated_ms_per_token_128K: 42.432
+
+--- turbo3 | 4_full_dequant_write | 1000 tokens ---
+mode:                   4_full_dequant_write
+quant_type:             turbo3
+n_tokens:               1000
+n_heads:                40
+d_head:                 128
+total_vectors:          80000
+packed_bytes:           4000000
+time_us:                334.2
+vectors_per_second:     239363337
+ns_per_vector:          4.18
+GB_s_packed_read:       11.97
+GB_s_fp16_write:        122.55
+estimated_ms_per_token_14K:  4.679
+estimated_ms_per_token_60K:  20.053
+estimated_ms_per_token_128K: 42.780
+
+--- turbo4 | 5_full_dequant_checksum | 1000 tokens ---
+mode:                   5_full_dequant_checksum
+quant_type:             turbo4
+n_tokens:               1000
+n_heads:                40
+d_head:                 128
+total_vectors:          80000
+packed_bytes:           5440000
+time_us:                370.4
+vectors_per_second:     215987812
+ns_per_vector:          4.63
+GB_s_packed_read:       14.69
+estimated_ms_per_token_14K:  5.185
+estimated_ms_per_token_60K:  22.223
+estimated_ms_per_token_128K: 47.410
+
+--- turbo3 | 5_full_dequant_checksum | 1000 tokens ---
+mode:                   5_full_dequant_checksum
+quant_type:             turbo3
+n_tokens:               1000
+n_heads:                40
+d_head:                 128
+total_vectors:          80000
+packed_bytes:           4000000
+time_us:                370.0
+vectors_per_second:     216194398
+ns_per_vector:          4.63
+GB_s_packed_read:       10.81
+estimated_ms_per_token_14K:  5.181
+estimated_ms_per_token_60K:  22.202
+estimated_ms_per_token_128K: 47.365
+
+--- turbo4 | 1_unpack_only | 4000 tokens ---
+mode:                   1_unpack_only
+quant_type:             turbo4
+n_tokens:               4000
+n_heads:                40
+d_head:                 128
+total_vectors:          320000
+packed_bytes:           21760000
+time_us:                401.6
+vectors_per_second:     796825725
+ns_per_vector:          1.25
+GB_s_packed_read:       54.18
+estimated_ms_per_token_14K:  1.406
+estimated_ms_per_token_60K:  6.024
+estimated_ms_per_token_128K: 12.851
+
+--- turbo3 | 1_unpack_only | 4000 tokens ---
+mode:                   1_unpack_only
+quant_type:             turbo3
+n_tokens:               4000
+n_heads:                40
+d_head:                 128
+total_vectors:          320000
+packed_bytes:           16000000
+time_us:                414.2
+vectors_per_second:     772546349
+ns_per_vector:          1.29
+GB_s_packed_read:       38.63
+estimated_ms_per_token_14K:  1.450
+estimated_ms_per_token_60K:  6.213
+estimated_ms_per_token_128K: 13.255
+
+--- turbo4 | 2_unpack_codebook | 4000 tokens ---
+mode:                   2_unpack_codebook
+quant_type:             turbo4
+n_tokens:               4000
+n_heads:                40
+d_head:                 128
+total_vectors:          320000
+packed_bytes:           21760000
+time_us:                442.6
+vectors_per_second:     723025250
+ns_per_vector:          1.38
+GB_s_packed_read:       49.17
+estimated_ms_per_token_14K:  1.549
+estimated_ms_per_token_60K:  6.639
+estimated_ms_per_token_128K: 14.163
+
+--- turbo3 | 2_unpack_codebook | 4000 tokens ---
+mode:                   2_unpack_codebook
+quant_type:             turbo3
+n_tokens:               4000
+n_heads:                40
+d_head:                 128
+total_vectors:          320000
+packed_bytes:           16000000
+time_us:                466.3
+vectors_per_second:     686266613
+ns_per_vector:          1.46
+GB_s_packed_read:       34.31
+estimated_ms_per_token_14K:  1.632
+estimated_ms_per_token_60K:  6.994
+estimated_ms_per_token_128K: 14.921
+
+--- turbo4 | 3_unpack_cb_wht | 4000 tokens ---
+mode:                   3_unpack_cb_wht
+quant_type:             turbo4
+n_tokens:               4000
+n_heads:                40
+d_head:                 128
+total_vectors:          320000
+packed_bytes:           21760000
+time_us:                893.1
+vectors_per_second:     358288725
+ns_per_vector:          2.79
+GB_s_packed_read:       24.36
+estimated_ms_per_token_14K:  3.126
+estimated_ms_per_token_60K:  13.397
+estimated_ms_per_token_128K: 28.580
+
+--- turbo3 | 3_unpack_cb_wht | 4000 tokens ---
+mode:                   3_unpack_cb_wht
+quant_type:             turbo3
+n_tokens:               4000
+n_heads:                40
+d_head:                 128
+total_vectors:          320000
+packed_bytes:           16000000
+time_us:                894.7
+vectors_per_second:     357667391
+ns_per_vector:          2.80
+GB_s_packed_read:       17.88
+estimated_ms_per_token_14K:  3.131
+estimated_ms_per_token_60K:  13.420
+estimated_ms_per_token_128K: 28.630
+
+--- turbo4 | 4_full_dequant_write | 4000 tokens ---
+mode:                   4_full_dequant_write
+quant_type:             turbo4
+n_tokens:               4000
+n_heads:                40
+d_head:                 128
+total_vectors:          320000
+packed_bytes:           21760000
+time_us:                954.0
+vectors_per_second:     335418040
+ns_per_vector:          2.98
+GB_s_packed_read:       22.81
+GB_s_fp16_write:        171.73
+estimated_ms_per_token_14K:  3.339
+estimated_ms_per_token_60K:  14.311
+estimated_ms_per_token_128K: 30.529
+
+--- turbo3 | 4_full_dequant_write | 4000 tokens ---
+mode:                   4_full_dequant_write
+quant_type:             turbo3
+n_tokens:               4000
+n_heads:                40
+d_head:                 128
+total_vectors:          320000
+packed_bytes:           16000000
+time_us:                1080.8
+vectors_per_second:     296079350
+ns_per_vector:          3.38
+GB_s_packed_read:       14.80
+GB_s_fp16_write:        151.59
+estimated_ms_per_token_14K:  3.783
+estimated_ms_per_token_60K:  16.212
+estimated_ms_per_token_128K: 34.585
+
+--- turbo4 | 5_full_dequant_checksum | 4000 tokens ---
+mode:                   5_full_dequant_checksum
+quant_type:             turbo4
+n_tokens:               4000
+n_heads:                40
+d_head:                 128
+total_vectors:          320000
+packed_bytes:           21760000
+time_us:                1144.4
+vectors_per_second:     279627272
+ns_per_vector:          3.58
+GB_s_packed_read:       19.01
+estimated_ms_per_token_14K:  4.005
+estimated_ms_per_token_60K:  17.166
+estimated_ms_per_token_128K: 36.620
+
+--- turbo3 | 5_full_dequant_checksum | 4000 tokens ---
+mode:                   5_full_dequant_checksum
+quant_type:             turbo3
+n_tokens:               4000
+n_heads:                40
+d_head:                 128
+total_vectors:          320000
+packed_bytes:           16000000
+time_us:                1149.4
+vectors_per_second:     278409393
+ns_per_vector:          3.59
+GB_s_packed_read:       13.92
+estimated_ms_per_token_14K:  4.023
+estimated_ms_per_token_60K:  17.241
+estimated_ms_per_token_128K: 36.780
+
+--- turbo4 | 1_unpack_only | 14000 tokens ---
+mode:                   1_unpack_only
+quant_type:             turbo4
+n_tokens:               14000
+n_heads:                40
+d_head:                 128
+total_vectors:          1120000
+packed_bytes:           76160000
+time_us:                1270.6
+vectors_per_second:     881476511
+ns_per_vector:          1.13
+GB_s_packed_read:       59.94
+estimated_ms_per_token_14K:  1.271
+estimated_ms_per_token_60K:  5.445
+estimated_ms_per_token_128K: 11.617
+
+--- turbo3 | 1_unpack_only | 14000 tokens ---
+mode:                   1_unpack_only
+quant_type:             turbo3
+n_tokens:               14000
+n_heads:                40
+d_head:                 128
+total_vectors:          1120000
+packed_bytes:           56000000
+time_us:                1268.8
+vectors_per_second:     882743648
+ns_per_vector:          1.13
+GB_s_packed_read:       44.14
+estimated_ms_per_token_14K:  1.269
+estimated_ms_per_token_60K:  5.438
+estimated_ms_per_token_128K: 11.600
+
+--- turbo4 | 2_unpack_codebook | 14000 tokens ---
+mode:                   2_unpack_codebook
+quant_type:             turbo4
+n_tokens:               14000
+n_heads:                40
+d_head:                 128
+total_vectors:          1120000
+packed_bytes:           76160000
+time_us:                1385.3
+vectors_per_second:     808514641
+ns_per_vector:          1.24
+GB_s_packed_read:       54.98
+estimated_ms_per_token_14K:  1.385
+estimated_ms_per_token_60K:  5.937
+estimated_ms_per_token_128K: 12.665
+
+--- turbo3 | 2_unpack_codebook | 14000 tokens ---
+mode:                   2_unpack_codebook
+quant_type:             turbo3
+n_tokens:               14000
+n_heads:                40
+d_head:                 128
+total_vectors:          1120000
+packed_bytes:           56000000
+time_us:                1455.9
+vectors_per_second:     769294400
+ns_per_vector:          1.30
+GB_s_packed_read:       38.46
+estimated_ms_per_token_14K:  1.456
+estimated_ms_per_token_60K:  6.239
+estimated_ms_per_token_128K: 13.311
+
+--- turbo4 | 3_unpack_cb_wht | 14000 tokens ---
+mode:                   3_unpack_cb_wht
+quant_type:             turbo4
+n_tokens:               14000
+n_heads:                40
+d_head:                 128
+total_vectors:          1120000
+packed_bytes:           76160000
+time_us:                3294.5
+vectors_per_second:     339961527
+ns_per_vector:          2.94
+GB_s_packed_read:       23.12
+estimated_ms_per_token_14K:  3.294
+estimated_ms_per_token_60K:  14.119
+estimated_ms_per_token_128K: 30.121
+
+--- turbo3 | 3_unpack_cb_wht | 14000 tokens ---
+mode:                   3_unpack_cb_wht
+quant_type:             turbo3
+n_tokens:               14000
+n_heads:                40
+d_head:                 128
+total_vectors:          1120000
+packed_bytes:           56000000
+time_us:                3666.8
+vectors_per_second:     305445363
+ns_per_vector:          3.27
+GB_s_packed_read:       15.27
+estimated_ms_per_token_14K:  3.667
+estimated_ms_per_token_60K:  15.715
+estimated_ms_per_token_128K: 33.525
+
+--- turbo4 | 4_full_dequant_write | 14000 tokens ---
+mode:                   4_full_dequant_write
+quant_type:             turbo4
+n_tokens:               14000
+n_heads:                40
+d_head:                 128
+total_vectors:          1120000
+packed_bytes:           76160000
+time_us:                3135.2
+vectors_per_second:     357232917
+ns_per_vector:          2.80
+GB_s_packed_read:       24.29
+GB_s_fp16_write:        182.90
+estimated_ms_per_token_14K:  3.135
+estimated_ms_per_token_60K:  13.437
+estimated_ms_per_token_128K: 28.665
+
+--- turbo3 | 4_full_dequant_write | 14000 tokens ---
+mode:                   4_full_dequant_write
+quant_type:             turbo3
+n_tokens:               14000
+n_heads:                40
+d_head:                 128
+total_vectors:          1120000
+packed_bytes:           56000000
+time_us:                3596.8
+vectors_per_second:     311390421
+ns_per_vector:          3.21
+GB_s_packed_read:       15.57
+GB_s_fp16_write:        159.43
+estimated_ms_per_token_14K:  3.597
+estimated_ms_per_token_60K:  15.415
+estimated_ms_per_token_128K: 32.885
+
+--- turbo4 | 5_full_dequant_checksum | 14000 tokens ---
+mode:                   5_full_dequant_checksum
+quant_type:             turbo4
+n_tokens:               14000
+n_heads:                40
+d_head:                 128
+total_vectors:          1120000
+packed_bytes:           76160000
+time_us:                4223.4
+vectors_per_second:     265186122
+ns_per_vector:          3.77
+GB_s_packed_read:       18.03
+estimated_ms_per_token_14K:  4.223
+estimated_ms_per_token_60K:  18.100
+estimated_ms_per_token_128K: 38.614
+
+--- turbo3 | 5_full_dequant_checksum | 14000 tokens ---
+mode:                   5_full_dequant_checksum
+quant_type:             turbo3
+n_tokens:               14000
+n_heads:                40
+d_head:                 128
+total_vectors:          1120000
+packed_bytes:           56000000
+time_us:                4531.5
+vectors_per_second:     247157388
+ns_per_vector:          4.05
+GB_s_packed_read:       12.36
+estimated_ms_per_token_14K:  4.532
+estimated_ms_per_token_60K:  19.421
+estimated_ms_per_token_128K: 41.431
+
+--- turbo4 | 1_unpack_only | 60000 tokens ---
+mode:                   1_unpack_only
+quant_type:             turbo4
+n_tokens:               60000
+n_heads:                40
+d_head:                 128
+total_vectors:          4800000
+packed_bytes:           326400000
+time_us:                5376.1
+vectors_per_second:     892838808
+ns_per_vector:          1.12
+GB_s_packed_read:       60.71
+estimated_ms_per_token_14K:  1.254
+estimated_ms_per_token_60K:  5.376
+estimated_ms_per_token_128K: 11.469
+
+--- turbo3 | 1_unpack_only | 60000 tokens ---
+mode:                   1_unpack_only
+quant_type:             turbo3
+n_tokens:               60000
+n_heads:                40
+d_head:                 128
+total_vectors:          4800000
+packed_bytes:           240000000
+time_us:                5352.1
+vectors_per_second:     896844878
+ns_per_vector:          1.12
+GB_s_packed_read:       44.84
+estimated_ms_per_token_14K:  1.249
+estimated_ms_per_token_60K:  5.352
+estimated_ms_per_token_128K: 11.418
+
+--- turbo4 | 2_unpack_codebook | 60000 tokens ---
+mode:                   2_unpack_codebook
+quant_type:             turbo4
+n_tokens:               60000
+n_heads:                40
+d_head:                 128
+total_vectors:          4800000
+packed_bytes:           326400000
+time_us:                5921.4
+vectors_per_second:     810614450
+ns_per_vector:          1.23
+GB_s_packed_read:       55.12
+estimated_ms_per_token_14K:  1.382
+estimated_ms_per_token_60K:  5.921
+estimated_ms_per_token_128K: 12.632
+
+--- turbo3 | 2_unpack_codebook | 60000 tokens ---
+mode:                   2_unpack_codebook
+quant_type:             turbo3
+n_tokens:               60000
+n_heads:                40
+d_head:                 128
+total_vectors:          4800000
+packed_bytes:           240000000
+time_us:                6167.9
+vectors_per_second:     778225503
+ns_per_vector:          1.28
+GB_s_packed_read:       38.91
+estimated_ms_per_token_14K:  1.439
+estimated_ms_per_token_60K:  6.168
+estimated_ms_per_token_128K: 13.158
+
+--- turbo4 | 3_unpack_cb_wht | 60000 tokens ---
+mode:                   3_unpack_cb_wht
+quant_type:             turbo4
+n_tokens:               60000
+n_heads:                40
+d_head:                 128
+total_vectors:          4800000
+packed_bytes:           326400000
+time_us:                14086.9
+vectors_per_second:     340741023
+ns_per_vector:          2.93
+GB_s_packed_read:       23.17
+estimated_ms_per_token_14K:  3.287
+estimated_ms_per_token_60K:  14.087
+estimated_ms_per_token_128K: 30.052
+
+--- turbo3 | 3_unpack_cb_wht | 60000 tokens ---
+mode:                   3_unpack_cb_wht
+quant_type:             turbo3
+n_tokens:               60000
+n_heads:                40
+d_head:                 128
+total_vectors:          4800000
+packed_bytes:           240000000
+time_us:                15892.4
+vectors_per_second:     302030405
+ns_per_vector:          3.31
+GB_s_packed_read:       15.10
+estimated_ms_per_token_14K:  3.708
+estimated_ms_per_token_60K:  15.892
+estimated_ms_per_token_128K: 33.904
+
+--- turbo4 | 4_full_dequant_write | 60000 tokens ---
+mode:                   4_full_dequant_write
+quant_type:             turbo4
+n_tokens:               60000
+n_heads:                40
+d_head:                 128
+total_vectors:          4800000
+packed_bytes:           326400000
+time_us:                13413.6
+vectors_per_second:     357844647
+ns_per_vector:          2.79
+GB_s_packed_read:       24.33
+GB_s_fp16_write:        183.22
+estimated_ms_per_token_14K:  3.130
+estimated_ms_per_token_60K:  13.414
+estimated_ms_per_token_128K: 28.616
+
+--- turbo3 | 4_full_dequant_write | 60000 tokens ---
+mode:                   4_full_dequant_write
+quant_type:             turbo3
+n_tokens:               60000
+n_heads:                40
+d_head:                 128
+total_vectors:          4800000
+packed_bytes:           240000000
+time_us:                15381.9
+vectors_per_second:     312054916
+ns_per_vector:          3.20
+GB_s_packed_read:       15.60
+GB_s_fp16_write:        159.77
+estimated_ms_per_token_14K:  3.589
+estimated_ms_per_token_60K:  15.382
+estimated_ms_per_token_128K: 32.815
+
+--- turbo4 | 5_full_dequant_checksum | 60000 tokens ---
+mode:                   5_full_dequant_checksum
+quant_type:             turbo4
+n_tokens:               60000
+n_heads:                40
+d_head:                 128
+total_vectors:          4800000
+packed_bytes:           326400000
+time_us:                18076.7
+vectors_per_second:     265534757
+ns_per_vector:          3.77
+GB_s_packed_read:       18.06
+estimated_ms_per_token_14K:  4.218
+estimated_ms_per_token_60K:  18.077
+estimated_ms_per_token_128K: 38.564
+
+--- turbo3 | 5_full_dequant_checksum | 60000 tokens ---
+mode:                   5_full_dequant_checksum
+quant_type:             turbo3
+n_tokens:               60000
+n_heads:                40
+d_head:                 128
+total_vectors:          4800000
+packed_bytes:           240000000
+time_us:                19559.6
+vectors_per_second:     245403762
+ns_per_vector:          4.07
+GB_s_packed_read:       12.27
+estimated_ms_per_token_14K:  4.564
+estimated_ms_per_token_60K:  19.560
+estimated_ms_per_token_128K: 41.727
+
+--- turbo4 | 1_unpack_only | 128000 tokens ---
+mode:                   1_unpack_only
+quant_type:             turbo4
+n_tokens:               128000
+n_heads:                40
+d_head:                 128
+total_vectors:          10240000
+packed_bytes:           696320000
+time_us:                11457.8
+vectors_per_second:     893712744
+ns_per_vector:          1.12
+GB_s_packed_read:       60.77
+estimated_ms_per_token_14K:  1.253
+estimated_ms_per_token_60K:  5.371
+estimated_ms_per_token_128K: 11.458
+
+--- turbo3 | 1_unpack_only | 128000 tokens ---
+mode:                   1_unpack_only
+quant_type:             turbo3
+n_tokens:               128000
+n_heads:                40
+d_head:                 128
+total_vectors:          10240000
+packed_bytes:           512000000
+time_us:                11410.0
+vectors_per_second:     897460030
+ns_per_vector:          1.11
+GB_s_packed_read:       44.87
+estimated_ms_per_token_14K:  1.248
+estimated_ms_per_token_60K:  5.348
+estimated_ms_per_token_128K: 11.410
+
+--- turbo4 | 2_unpack_codebook | 128000 tokens ---
+mode:                   2_unpack_codebook
+quant_type:             turbo4
+n_tokens:               128000
+n_heads:                40
+d_head:                 128
+total_vectors:          10240000
+packed_bytes:           696320000
+time_us:                12630.5
+vectors_per_second:     810738942
+ns_per_vector:          1.23
+GB_s_packed_read:       55.13
+estimated_ms_per_token_14K:  1.381
+estimated_ms_per_token_60K:  5.921
+estimated_ms_per_token_128K: 12.630
+
+--- turbo3 | 2_unpack_codebook | 128000 tokens ---
+mode:                   2_unpack_codebook
+quant_type:             turbo3
+n_tokens:               128000
+n_heads:                40
+d_head:                 128
+total_vectors:          10240000
+packed_bytes:           512000000
+time_us:                13160.9
+vectors_per_second:     778059906
+ns_per_vector:          1.29
+GB_s_packed_read:       38.90
+estimated_ms_per_token_14K:  1.439
+estimated_ms_per_token_60K:  6.169
+estimated_ms_per_token_128K: 13.161
+
+--- turbo4 | 3_unpack_cb_wht | 128000 tokens ---
+mode:                   3_unpack_cb_wht
+quant_type:             turbo4
+n_tokens:               128000
+n_heads:                40
+d_head:                 128
+total_vectors:          10240000
+packed_bytes:           696320000
+time_us:                30047.1
+vectors_per_second:     340798144
+ns_per_vector:          2.93
+GB_s_packed_read:       23.17
+estimated_ms_per_token_14K:  3.286
+estimated_ms_per_token_60K:  14.085
+estimated_ms_per_token_128K: 30.047
+
+--- turbo3 | 3_unpack_cb_wht | 128000 tokens ---
+mode:                   3_unpack_cb_wht
+quant_type:             turbo3
+n_tokens:               128000
+n_heads:                40
+d_head:                 128
+total_vectors:          10240000
+packed_bytes:           512000000
+time_us:                33906.9
+vectors_per_second:     302003014
+ns_per_vector:          3.31
+GB_s_packed_read:       15.10
+estimated_ms_per_token_14K:  3.709
+estimated_ms_per_token_60K:  15.894
+estimated_ms_per_token_128K: 33.907
+
+--- turbo4 | 4_full_dequant_write | 128000 tokens ---
+mode:                   4_full_dequant_write
+quant_type:             turbo4
+n_tokens:               128000
+n_heads:                40
+d_head:                 128
+total_vectors:          10240000
+packed_bytes:           696320000
+time_us:                28611.3
+vectors_per_second:     357900837
+ns_per_vector:          2.79
+GB_s_packed_read:       24.34
+GB_s_fp16_write:        183.25
+estimated_ms_per_token_14K:  3.129
+estimated_ms_per_token_60K:  13.412
+estimated_ms_per_token_128K: 28.611
+
+--- turbo3 | 4_full_dequant_write | 128000 tokens ---
+mode:                   4_full_dequant_write
+quant_type:             turbo3
+n_tokens:               128000
+n_heads:                40
+d_head:                 128
+total_vectors:          10240000
+packed_bytes:           512000000
+time_us:                32816.4
+vectors_per_second:     312039520
+ns_per_vector:          3.20
+GB_s_packed_read:       15.60
+GB_s_fp16_write:        159.76
+estimated_ms_per_token_14K:  3.589
+estimated_ms_per_token_60K:  15.383
+estimated_ms_per_token_128K: 32.816
+
+--- turbo4 | 5_full_dequant_checksum | 128000 tokens ---
+mode:                   5_full_dequant_checksum
+quant_type:             turbo4
+n_tokens:               128000
+n_heads:                40
+d_head:                 128
+total_vectors:          10240000
+packed_bytes:           696320000
+time_us:                38548.7
+vectors_per_second:     265638269
+ns_per_vector:          3.76
+GB_s_packed_read:       18.06
+estimated_ms_per_token_14K:  4.216
+estimated_ms_per_token_60K:  18.070
+estimated_ms_per_token_128K: 38.549
+
+--- turbo3 | 5_full_dequant_checksum | 128000 tokens ---
+mode:                   5_full_dequant_checksum
+quant_type:             turbo3
+n_tokens:               128000
+n_heads:                40
+d_head:                 128
+total_vectors:          10240000
+packed_bytes:           512000000
+time_us:                41718.7
+vectors_per_second:     245453265
+ns_per_vector:          4.07
+GB_s_packed_read:       12.27
+estimated_ms_per_token_14K:  4.563
+estimated_ms_per_token_60K:  19.556
+estimated_ms_per_token_128K: 41.719
+
+============================================
+CRITICAL COMPARISON: Mode 4 (split write) vs Mode 5 (checksum)
+============================================
+turbo4 | 1000 tokens:
+  Mode 4 (write):    331.5 us
+  Mode 5 (checksum): 370.4 us
+  Write overhead:    -38.9 us (-10.5%)
+  Est ms/token 14K:  write=4.641 csum=5.185 delta=-0.545
+
+turbo3 | 1000 tokens:
+  Mode 4 (write):    334.2 us
+  Mode 5 (checksum): 370.0 us
+  Write overhead:    -35.8 us (-9.7%)
+  Est ms/token 14K:  write=4.679 csum=5.181 delta=-0.501
+
+turbo4 | 4000 tokens:
+  Mode 4 (write):    954.0 us
+  Mode 5 (checksum): 1144.4 us
+  Write overhead:    -190.3 us (-16.6%)
+  Est ms/token 14K:  write=3.339 csum=4.005 delta=-0.666
+
+turbo3 | 4000 tokens:
+  Mode 4 (write):    1080.8 us
+  Mode 5 (checksum): 1149.4 us
+  Write overhead:    -68.6 us (-6.0%)
+  Est ms/token 14K:  write=3.783 csum=4.023 delta=-0.240
+
+turbo4 | 14000 tokens:
+  Mode 4 (write):    3135.2 us
+  Mode 5 (checksum): 4223.4 us
+  Write overhead:    -1088.2 us (-25.8%)
+  Est ms/token 14K:  write=3.135 csum=4.223 delta=-1.088
+
+turbo3 | 14000 tokens:
+  Mode 4 (write):    3596.8 us
+  Mode 5 (checksum): 4531.5 us
+  Write overhead:    -934.8 us (-20.6%)
+  Est ms/token 14K:  write=3.597 csum=4.532 delta=-0.935
+
+turbo4 | 60000 tokens:
+  Mode 4 (write):    13413.6 us
+  Mode 5 (checksum): 18076.7 us
+  Write overhead:    -4663.1 us (-25.8%)
+  Est ms/token 14K:  write=3.130 csum=4.218 delta=-1.088
+
+turbo3 | 60000 tokens:
+  Mode 4 (write):    15381.9 us
+  Mode 5 (checksum): 19559.6 us
+  Write overhead:    -4177.7 us (-21.4%)
+  Est ms/token 14K:  write=3.589 csum=4.564 delta=-0.975
+
+turbo4 | 128000 tokens:
+  Mode 4 (write):    28611.3 us
+  Mode 5 (checksum): 38548.7 us
+  Write overhead:    -9937.4 us (-25.8%)
+  Est ms/token 14K:  write=3.129 csum=4.216 delta=-1.087
+
+turbo3 | 128000 tokens:
+  Mode 4 (write):    32816.4 us
+  Mode 5 (checksum): 41718.7 us
+  Write overhead:    -8902.4 us (-21.3%)
+  Est ms/token 14K:  write=3.589 csum=4.563 delta=-0.974
+
