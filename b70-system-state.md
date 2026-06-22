@@ -444,6 +444,48 @@ Measures the speedup from computing attention in rotated (Hadamard) space, which
 
 **Results:** `~/turboquant-sycl/phase05_bench_results.txt`
 
+### TurboQuant SYCL Phase 2 — Fused Rotated-Space Attention (Phase 2 Stage 1)
+
+Fused attention kernel where each thread handles one (head, token) and does a sequential 128-dim dot product — eliminates the tree reduction (7 barrier stages) that was 84% of Phase 0.5's cost. Includes FP16 baseline for overhead measurement.
+
+**Correctness: 4/4 PASS**
+
+| Test | Result | Detail |
+|------|--------|--------|
+| Fused TQ K-scores vs CPU reference | PASS | Max abs error: 2.3e-5 |
+| GPU softmax vs CPU softmax | PASS | Max abs error: 2.4e-7 |
+| Full fused TQ attention vs CPU standard | PASS | Max rel error: 5.1e-7 |
+| FP16 baseline attention vs CPU standard | PASS | Max rel error: 4.5e-4 |
+
+**Benchmark: TQ fused vs FP16 baseline (tile_size=64, best)**
+
+| n_tokens | TQ (us) | FP16 (us) | TQ overhead (us) | TQ/FP16 ratio | est ms/tok @14K |
+|----------|---------|-----------|-------------------|---------------|-----------------|
+| 1K | 39.5 | 33.6 | +5.9 | 1.18x | 0.553 |
+| 4K | 122.0 | 227.1 | **-105.1** | **0.54x** | 0.427 |
+| 14K | 482.9 | 736.2 | **-253.4** | **0.66x** | 0.483 |
+| 60K | 1,979.6 | 3,074.2 | **-1,094.6** | **0.64x** | 0.462 |
+
+**K-score kernel isolation (TQ vs FP16):**
+
+| n_tokens | TQ K-score (us) | FP16 K-score (us) | TQ/FP16 ratio | TQ ns/vec |
+|----------|-----------------|-------------------|---------------|-----------|
+| 1K | 10.2 | 12.2 | **0.83x** | 0.25 |
+| 4K | 41.5 | 90.0 | **0.46x** | 0.26 |
+| 14K | 137.0 | 273.4 | **0.50x** | 0.24 |
+| 60K | 518.0 | 1,117.5 | **0.46x** | 0.22 |
+
+**Key findings:**
+- **TQ is FASTER than FP16 baseline** at 4K+ context — negative overhead! TQ reads 68 bytes/vector vs FP16's 256 bytes/vector (3.8x less bandwidth), and the codebook lookup ALU cost is fully hidden by the bandwidth savings.
+- K-score kernel: TQ is 2x faster than FP16 at steady state (0.22 ns/vec vs 0.47 ns/vec), confirming the fused sequential dot product eliminates the Phase 0.5 tree reduction bottleneck.
+- Phase 0.5 K-score was 2.35 ns/vec (tree reduction). Phase 2 K-score is 0.22 ns/vec — **10.7x improvement** from eliminating tree reduction.
+- Full pipeline at 14K: **0.483 ms** (tile=64) — well under the 1.0 ms target threshold.
+- Best tile_size is 64 at all context depths ≥4K (32 at 1K, likely kernel launch overhead dominated).
+- At 1K tokens, TQ has slight positive overhead (1.18x) — kernel launch costs dominate at small scales.
+- Softmax kernel cost is negligible (4.7-92 us, <5% of total).
+
+**Results:** `~/turboquant-sycl/phase2_bench_results.txt`
+
 ### V100 Comparison (Definition of Success)
 
 | Metric | B70 | V100 | Delta |
@@ -550,6 +592,8 @@ quantized MoE on XPU. The model loads, serves, and produces coherent output.
 
 13. **Rotated-space attention gives 1.9x speedup over split dequant** — Phase 0.5 shows computing attention in Hadamard-rotated space eliminates WHT from the per-token inner loop, reducing dequant+attention cost from 2.71 ns/vec to 1.43 ns/vec (1.93x at steady state). K-score dot-product reduction dominates (84% of Path D cost at 2.35 ns/vec). V-accumulate is extremely cheap (0.42 ns/vec, no barriers). Estimated ms/token at 14K drops from 3.0 to 1.6 ms — significant but still above 1.0 ms target, confirming fused kernel (Phase 2) is needed.
 
+14. **Fused TQ attention is FASTER than FP16 baseline — negative overhead** — Phase 2 fused kernel with sequential 128-dim dot product (no tree reduction) achieves 0.22 ns/vec for K-scores (vs Phase 0.5's 2.35 ns/vec = 10.7x improvement). TQ reads 68 bytes/vector vs FP16's 256 bytes (3.8x bandwidth reduction), and the codebook lookup ALU cost is fully hidden. Full pipeline at 14K: 0.483 ms (well under 1.0 ms target). TQ is 0.66x of FP16 time at 14K — meaning TQ isn't just "cheap enough," it's actually **faster** than uncompressed FP16 attention. This transforms TurboQuant from a space-saving compression with speed penalty into a simultaneous win on both memory and compute.
+
 ## Disk Usage
 
 | Path | Size | What |
@@ -596,6 +640,10 @@ quantized MoE on XPU. The model loads, serves, and produces coherent output.
 - `~/turboquant-sycl/phase05_bench_results.txt` — full Phase 0.5 benchmark (Paths A-D, all scales)
 - `~/turboquant-sycl/src/tq_rotated_bench.cpp` — SYCL rotated-space attention kernels + benchmark
 - `~/turboquant-sycl/reference/tq_cpu_attention.h` — CPU attention reference (standard + rotated)
+
+### Phase 2 Results (Fused Rotated-Space Attention)
+- `~/turboquant-sycl/phase2_bench_results.txt` — full Phase 2 benchmark (TQ vs FP16, tile sweep, kernel isolation)
+- `~/turboquant-sycl/src/tq_fused_bench.cpp` — SYCL fused attention kernels + FP16 baseline + benchmark
 
 ### Concurrency × Context Matrix
 - `~/b70-vllm/results/matrix/matrix_results.txt` — raw matrix benchmark results

@@ -31,3 +31,8 @@ target_link_options(tq_bench PRIVATE ${SYCL_LINK_FLAGS})
 add_executable(tq_rotated_bench src/tq_rotated_bench.cpp)
 target_compile_options(tq_rotated_bench PRIVATE ${SYCL_COMPILE_FLAGS} -O2)
 target_link_options(tq_rotated_bench PRIVATE ${SYCL_LINK_FLAGS})
+
+# --- Phase 2: Fused rotated-space attention benchmark ---
+add_executable(tq_fused_bench src/tq_fused_bench.cpp)
+target_compile_options(tq_fused_bench PRIVATE ${SYCL_COMPILE_FLAGS} -O2)
+target_link_options(tq_fused_bench PRIVATE ${SYCL_LINK_FLAGS})
