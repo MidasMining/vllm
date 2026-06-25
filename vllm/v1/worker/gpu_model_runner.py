@@ -213,7 +213,7 @@ from vllm.v1.worker.ubatch_utils import (
     split_attn_metadata,
 )
 from vllm.v1.worker.utils import is_residual_scattered_for_sp
-from vllm.v1.worker.workspace import lock_workspace
+from vllm.v1.worker.workspace import current_workspace_manager, lock_workspace
 
 from .utils import (
     AttentionGroup,
@@ -6582,6 +6582,59 @@ class GPUModelRunner(
         return int(total_estimate)
 
     @instrument(span_name="Capture model")
+    def _reserve_tq_workspace(self) -> None:
+        """Pre-reserve workspace for TurboQuant continuation prefill.
+
+        Continuation prefill dequants all cached K/V from compressed TQ
+        format into float16 workspace buffers sized:
+            2 * (1 * num_kv_heads * max_model_len * head_dim) * 2 bytes
+
+        This must happen before graph capture so the workspace tensor is
+        large enough when graphs record their pointers to it.
+        """
+        import math
+        from vllm.v1.kv_cache_interface import (
+            AttentionSpec,
+            UniformTypeKVCacheSpecs,
+        )
+        ws = current_workspace_manager()
+        # Find TQ attention layers to get num_kv_heads and head_dim.
+        # The spec may be wrapped in UniformTypeKVCacheSpecs for hybrid
+        # models (e.g. Qwen3.6 with TQ full-attention + Mamba layers).
+        for group in self.kv_cache_config.kv_cache_groups:
+            spec = group.kv_cache_spec
+            # Unwrap UniformTypeKVCacheSpecs to find the TQ attention spec
+            if isinstance(spec, UniformTypeKVCacheSpecs):
+                for inner_spec in spec.kv_cache_specs.values():
+                    if isinstance(inner_spec, AttentionSpec):
+                        spec = inner_spec
+                        break
+                else:
+                    continue
+            if not isinstance(spec, AttentionSpec):
+                continue
+            num_kv_heads = spec.num_kv_heads
+            head_dim = spec.head_size
+            block_size = spec.block_size
+            max_ctx = self.max_model_len
+            alloc_len = math.ceil(max_ctx / block_size) * block_size
+            buf_shape = (1, num_kv_heads, alloc_len, head_dim)
+            # Force workspace to grow to worst-case size
+            ws.get_simultaneous(
+                (buf_shape, torch.float16),
+                (buf_shape, torch.float16),
+            )
+            logger.info(
+                "Pre-reserved TQ workspace for max context %d: "
+                "%.2f MB (num_kv_heads=%d, head_dim=%d, alloc_len=%d)",
+                max_ctx,
+                2 * num_kv_heads * alloc_len * head_dim * 2 / (1024**2),
+                num_kv_heads,
+                head_dim,
+                alloc_len,
+            )
+            return  # Only need the largest TQ attention spec
+
     def capture_model(self) -> int:
         if self.compilation_config.cudagraph_mode == CUDAGraphMode.NONE:
             logger.warning(
@@ -6596,6 +6649,20 @@ class GPUModelRunner(
         compilation_counter.num_gpu_runner_capture_triggers += 1
 
         start_time = time.perf_counter()
+
+        # Pre-reserve workspace for TurboQuant continuation prefill.
+        # The workspace is sized dynamically during warmup, but warmup only
+        # exercises the decode path (max_query_len=1). Continuation prefill
+        # needs workspace proportional to max_model_len * num_kv_heads *
+        # head_dim * 2 (K+V buffers in float16). Without this, the workspace
+        # locks at a size too small for long-context continuation prefill,
+        # causing an assertion failure at 64K+ context.
+        # The reservation is transient: it sizes the workspace buffer, which
+        # is then captured at the correct size by the graphs below.
+        if self.cache_config.cache_dtype and str(
+            self.cache_config.cache_dtype
+        ).startswith("turboquant_"):
+            self._reserve_tq_workspace()
 
         # Trigger CUDA graph capture for specific shapes.
         # Capture the large shapes first so that the smaller shapes

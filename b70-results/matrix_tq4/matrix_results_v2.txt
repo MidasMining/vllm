@@ -1,0 +1,124 @@
+# TQ4 Concurrency x Context Matrix Benchmark Results (v2 -- with workspace fix)
+# Date: 2026-06-25
+# Server: MoE 35B-A3B AutoRound INT4, TurboQuant 4-bit KV cache
+# GPU: Intel Arc B580 (B70)
+# KV budget: 984,912 tokens (vs 388,747 FP8 -- 2.53x more)
+# Benchmark: matrix_bench.py, 3 rounds per cell, 256 max_tokens, thinking=false
+# vLLM: --max-model-len 131072 --block-size 32 --kv-cache-dtype turboquant_4bit_nc
+#
+# XPU Graph: FULL_DECODE_ONLY on ALL cells (workspace fix pre-reserves 256MB TQ workspace)
+#   Previously 64K/128K cells crashed with assertion error (65MB locked vs 68MB+ needed)
+#   Fix: Pre-reserve workspace for max_model_len at init, before graph capture
+#
+# 4K/16K/32K cells: reused from v1 (already had XPU Graph)
+# 64K/128K cells: RE-RUN with graph enabled (workspace fix applied)
+
+## Raw results (averaged over 3 rounds)
+
+c=1  ctx=4K    agg=63.2   per_req=72.1   ttft=0.53s   (XPU Graph -- v1)
+c=1  ctx=16K   agg=41.8   per_req=60.6   ttft=2.10s   (XPU Graph -- v1)
+c=1  ctx=32K   agg=25.9   per_req=47.3   ttft=4.80s   (XPU Graph -- v1)
+c=1  ctx=64K   agg=14.7   per_req=36.0   ttft=11.7s   (XPU Graph -- v2 NEW)
+c=1  ctx=128K  agg=6.6    per_req=23.3   ttft=32.1s   (XPU Graph -- v2 NEW)
+
+c=2  ctx=4K    agg=85.9   per_req=48.7   ttft=0.74s   (XPU Graph -- v1)
+c=2  ctx=16K   agg=52.4   per_req=38.4   ttft=3.19s   (XPU Graph -- v1)
+c=2  ctx=32K   agg=32.4   per_req=29.9   ttft=7.23s   (XPU Graph -- v1)
+c=2  ctx=64K   agg=16.4   per_req=20.6   ttft=17.9s   (XPU Graph -- v2 NEW)
+c=2  ctx=128K  agg=7.0    per_req=12.6   ttft=49.2s   (XPU Graph -- v2 NEW)
+
+c=4  ctx=4K    agg=137.8  per_req=40.9   ttft=1.22s   (XPU Graph -- v1)
+c=4  ctx=16K   agg=67.3   per_req=26.5   ttft=5.36s   (XPU Graph -- v1)
+c=4  ctx=32K   agg=38.0   per_req=18.3   ttft=12.1s   (XPU Graph -- v1)
+c=4  ctx=64K   agg=17.6   per_req=10.9   ttft=30.2s   (XPU Graph -- v2 NEW)
+c=4  ctx=128K  agg=7.1    per_req=6.2    ttft=84.2s   (XPU Graph -- v2 NEW)
+
+c=8  ctx=4K    agg=195.4  per_req=31.0   ttft=2.20s   (XPU Graph -- v1)
+c=8  ctx=16K   agg=78.7   per_req=16.8   ttft=9.87s   (XPU Graph -- v1)
+c=8  ctx=32K   agg=40.7   per_req=10.5   ttft=22.4s   (XPU Graph -- v1)
+c=8  ctx=64K   agg=18.3   per_req=6.2    ttft=56.5s   (XPU Graph -- v2 NEW)
+c=8  ctx=128K  --          --             --           (exceeds KV: 8x131K > 984K)
+
+c=16 ctx=4K    agg=253.0  per_req=21.9   ttft=4.23s   (XPU Graph -- v1)
+c=16 ctx=16K   agg=86.8   per_req=10.3   ttft=19.2s   (XPU Graph -- v1)
+c=16 ctx=32K   agg=42.5   per_req=6.3    ttft=44.4s   (XPU Graph -- v1)
+c=16 ctx=64K   --          --             --           (exceeds KV: 16x70K > 984K)
+c=16 ctx=128K  --          --             --           (exceeds KV: 16x131K > 984K)
+
+## Workspace Fix Impact: 64K/128K Before/After XPU Graph
+
+                   NO GRAPH (v1)                    WITH GRAPH (v2)              Speedup
+               agg    per_req  ttft            agg    per_req  ttft          agg   per_req
+c=1 ctx=64K    8.1    12.0     11.8s           14.7   36.0     11.7s         1.81x  3.00x
+c=2 ctx=64K   11.5     9.8    17.9s           16.4   20.6     17.9s         1.43x  2.10x
+c=4 ctx=64K   15.1     7.7    30.2s           17.6   10.9     30.2s         1.17x  1.42x
+c=8 ctx=64K   17.3     5.4    56.4s           18.3    6.2     56.5s         1.06x  1.15x
+
+c=1 ctx=128K   5.2    12.1    32.2s            6.6   23.3     32.1s         1.27x  1.93x
+c=2 ctx=128K   6.2     8.4    49.3s            7.0   12.6     49.2s         1.13x  1.50x
+c=4 ctx=128K   6.9     5.5    84.3s            7.1    6.2     84.2s         1.03x  1.13x
+
+## Analysis
+
+1. XPU Graph decode speedup is most pronounced at LOW concurrency:
+   - c=1 64K: 3.0x per-request decode rate, 1.81x aggregate
+   - c=1 128K: 1.93x per-request decode rate, 1.27x aggregate
+   At low concurrency, decode is 1 token at a time -- graph overhead dominates.
+   At high concurrency (c=8), decode batches 8 tokens -- overhead is amortized.
+
+2. TTFT is unchanged (expected): Prefill always runs eagerly (not graphed).
+   Graph only accelerates the decode phase.
+
+3. Aggregate improvement diminishes with concurrency because:
+   - Prefill dominates wall time at high concurrency (serial prefill queuing)
+   - Decode batch size is larger, so per-step overhead fraction shrinks
+   - The 256 output tokens are a small fraction of total compute
+
+4. All 64K/128K cells now work with XPU Graph (previously crashed).
+   The workspace fix pre-reserves 256MB at init for max_model_len=131072,
+   so the TQ attention kernel always has enough workspace regardless of
+   when graph capture vs. inference happens.
+
+## TQ4 vs FP8 comparison (aggregate tok/s, all with XPU Graph now)
+
+               c=1           c=2           c=4           c=8           c=16
+ctx=4K    TQ4  63.2     TQ4  85.9    TQ4 137.8    TQ4 195.4    TQ4 253.0
+          FP8  71.5*    FP8  89.0    FP8 142.6    FP8 210.7    FP8 281.8
+
+ctx=16K   TQ4  41.8     TQ4  52.4    TQ4  67.3    TQ4  78.7    TQ4  86.8
+          FP8  68.6*    FP8  57.6    FP8  68.2    FP8  80.6    FP8  85.9
+
+ctx=32K   TQ4  25.9     TQ4  32.4    TQ4  38.0    TQ4  40.7    TQ4  42.5
+          FP8  64.6*    FP8  23.2    FP8  26.5    FP8  34.4    FP8    --
+
+ctx=64K   TQ4  14.7     TQ4  16.4    TQ4  17.6    TQ4  18.3    TQ4    --
+          FP8  14.4     FP8  15.0    FP8  14.8    FP8    --     FP8    --
+
+ctx=128K  TQ4   6.6     TQ4   7.0    TQ4   7.1    TQ4    --     TQ4    --
+          FP8   5.1     FP8   4.8    FP8    --     FP8    --     FP8    --
+
+* FP8 c=1 short-context values from prior data (different methodology)
+-- cell exceeds KV budget or not measured
+
+## Updated Key Findings (v2)
+
+1. Workspace fix eliminates the TQ4+Graph 64K+ crash. ALL cells now run
+   with XPU Graph decode, making TQ4 vs FP8 comparisons fair.
+
+2. TQ4 now BEATS FP8 at 64K across all concurrency levels:
+   - c=1: 14.7 vs 14.4 (+2%)
+   - c=2: 16.4 vs 15.0 (+9%)
+   - c=4: 17.6 vs 14.8 (+19%)
+   - c=8: 18.3 vs N/A (FP8 cannot serve c=8 at 64K)
+
+3. TQ4 dominates at 128K:
+   - c=1: 6.6 vs 5.1 (+29%)
+   - c=2: 7.0 vs 4.8 (+46%)
+   - c=4: 7.1 vs N/A (FP8 cannot serve c=4 at 128K)
+
+4. The workspace fix + XPU Graph gives TQ4 the best of both worlds:
+   - 2.53x KV budget vs FP8 (long context capacity)
+   - Competitive or better throughput at 64K+ (graph decode)
+   - Slightly lower throughput at short context (TQ dequant overhead)
+
+5. Regression check passed: c=1 4K = 64.0 tok/s (was 63.2), no degradation.
