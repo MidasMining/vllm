@@ -11,7 +11,7 @@
 | CPU | AMD EPYC 7R32 48-Core (96 threads) |
 | RAM | 126 GB |
 | Storage | 233 GB NVMe + 256 GB USB flash (/mnt/flash) |
-| Network | 192.168.1.57 (SSH: user/1) |
+| Network | <RIG_IP> (see internal docs for access) |
 | Render Node | /dev/dri/card1 |
 | GPU Count | 1 |
 
@@ -827,7 +827,7 @@ All saved to `~/b70-vllm/results/` including:
 
 ```bash
 # SSH to rig
-ssh user@192.168.1.57  # password: 1
+ssh user@<RIG_IP>  # see internal docs for credentials
 
 # llama.cpp benchmark (fastest)
 source /opt/intel/oneapi/setvars.sh --force
