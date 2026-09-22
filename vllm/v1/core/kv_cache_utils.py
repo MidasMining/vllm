@@ -1192,6 +1192,10 @@ def _pp_balanced_mamba_group_count(
     return num_groups
 
 
+GLM5N_SIDECAR_BLOCK_SIZE_ENV = "VLLM_GLM5N_SIDECAR_BLOCK_SIZE"
+GLM5N_SIDECAR_BLOCK_SIZE_DEFAULT = 256
+
+
 def _reblock_glm5n_sidecar_specs(
     sidecar_specs: dict[str, KVCacheSpec],
 ) -> dict[str, KVCacheSpec]:
