@@ -155,11 +155,13 @@ def get_kv_cache_spec(vllm_config: VllmConfig) -> dict[str, KVCacheSpec]:
         from vllm.v1.core.kv_cache_utils import _reblock_glm5n_sidecar_specs
         from vllm.v1.kv_cache_interface import MLAAttentionSpec, MambaSpec
 
+        # Draft layers only: SWA/full-attention specs. KpoolTailSpec is also a
+        # non-MLA AttentionSpec but belongs to the core kpool layout — its
+        # tail-cache geometry (pool_size) must not be re-blocked.
         sidecar = {
             n: sp
             for n, sp in kv_cache_spec.items()
-            if isinstance(sp, AttentionSpec)
-            and not isinstance(sp, (MLAAttentionSpec, MambaSpec))
+            if type(sp).__name__ in ("SlidingWindowSpec", "FullAttentionSpec")
         }
         for n, sp in _reblock_glm5n_sidecar_specs(sidecar).items():
             kv_cache_spec[n] = sp
