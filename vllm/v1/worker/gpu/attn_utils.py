@@ -1,4 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
+from vllm.logger import init_logger
+
+logger = init_logger(__name__)
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 from collections.abc import Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
@@ -147,6 +150,11 @@ def get_kv_cache_spec(vllm_config: VllmConfig) -> dict[str, KVCacheSpec]:
     # costs ~19MB/layer per id and starves the pool — see
     # kv_cache_utils._reblock_glm5n_sidecar_specs).
     spec_cfg = vllm_config.speculative_config
+    logger.info(
+        "spec-assembly: method=%s spec_types=%s",
+        getattr(spec_cfg, "method", None),
+        sorted({type(sp).__name__ for sp in kv_cache_spec.values()}),
+    )
     if (
         spec_cfg is not None
         and spec_cfg.method == "dflash"
