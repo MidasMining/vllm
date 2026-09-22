@@ -1822,41 +1822,64 @@ def get_kv_cache_config_from_groups(
         )
         num_blocks = available_memory // per_block
         num_blocks = may_override_num_blocks(vllm_config, num_blocks)
-        kv_cache_tensors = [
-            KVCacheTensor(
-                size=mla_page * num_blocks,
-                layers=[mla_name]
-                + [g.layer_names[i] for g in mamba_groups if i < len(g.layer_names)],
-                layer_stride=0,
-                block_stride=mla_page,
+        # v0.30 worker contract: one backing arena; every tensor carries the
+        # arena size and places its region by offset. Regions are laid out
+        # back to back: [mla_0..mla_n | idx_0..idx_n | sidecar...], each
+        # region layer-contiguous (block_stride = its page, layer_stride = 0
+        # so co-owning layers alias the region).
+        arena = per_block * num_blocks
+        kv_cache_tensors = []
+        _off = 0
+        for i, mla_name in enumerate(mla_names):
+            kv_cache_tensors.append(
+                KVCacheTensor(
+                    size=arena,
+                    layers=[mla_name]
+                    + [
+                        g.layer_names[i]
+                        for g in mamba_groups
+                        if i < len(g.layer_names)
+                    ],
+                    layer_stride=0,
+                    block_stride=mla_page,
+                    offset=_off,
+                )
             )
-            for i, mla_name in enumerate(mla_names)
-        ] + [
-            # Each indexer tensor is co-owned by its sibling tail layer (paired
-            # by model-layer order; both lists derive from the layer-ordered
-            # kv_cache_spec dict). The tail's page_size_padded=idx_page makes
-            # the runner carve a strided bf16 tail view out of this storage.
-            KVCacheTensor(
-                size=idx_page * num_blocks,
-                layers=(
-                    [idx_names[i], tail_names[i]] if tail_names else [idx_names[i]]
-                ),
-                layer_stride=0,
-                block_stride=idx_page,
+            _off += mla_page * num_blocks
+        # Each indexer tensor is co-owned by its sibling tail layer (paired
+        # by model-layer order; both lists derive from the layer-ordered
+        # kv_cache_spec dict). The tail's page_size_padded=idx_page makes
+        # the runner carve a strided bf16 tail view out of this storage.
+        for i in range(len(idx_names)):
+            kv_cache_tensors.append(
+                KVCacheTensor(
+                    size=arena,
+                    layers=(
+                        [idx_names[i], tail_names[i]]
+                        if tail_names
+                        else [idx_names[i]]
+                    ),
+                    layer_stride=0,
+                    block_stride=idx_page,
+                    offset=_off,
+                )
             )
-            for i in range(len(idx_names))
-        ] + [
-            # Sidecar layers (e.g. DFlash draft attention): plain per-layer
-            # tensors at their own page size, no slot sharing.
-            KVCacheTensor(
-                size=g.kv_cache_spec.page_size_bytes * num_blocks,
-                layers=[layer_name],
-                layer_stride=0,
-                block_stride=g.kv_cache_spec.page_size_bytes,
-            )
-            for g in sidecar_groups
-            for layer_name in g.layer_names
-        ]
+            _off += idx_page * num_blocks
+        # Sidecar layers (e.g. DFlash draft attention): plain per-layer
+        # regions at their own page size, no slot sharing.
+        for g in sidecar_groups:
+            for layer_name in g.layer_names:
+                kv_cache_tensors.append(
+                    KVCacheTensor(
+                        size=arena,
+                        layers=[layer_name],
+                        layer_stride=0,
+                        block_stride=g.kv_cache_spec.page_size_bytes,
+                        offset=_off,
+                    )
+                )
+                _off += g.kv_cache_spec.page_size_bytes * num_blocks
+        assert _off == arena, (_off, arena)
         # The glm5n layout is complete: heterogeneous per-tensor page sizes by
         # construction, so skip the generic uniform-layout validation below.
         return KVCacheConfig(
