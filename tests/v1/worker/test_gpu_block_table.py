@@ -13,6 +13,49 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def test_kpool_tail_long_context_uses_circular_mapping():
+    from vllm.v1.attention.backends.mla.indexer import compute_kpool_tail_slot_mapping
+    from vllm.v1.kv_cache_interface import KpoolTailSpec
+
+    spec = KpoolTailSpec(
+        block_size=4,
+        num_kv_heads=2,
+        head_size=128,
+        head_size_v=0,
+        dtype=torch.bfloat16,
+        sliding_window=4,
+    )
+    # Fail before launching the unsafe generic kernel on an unfixed build.
+    assert not spec.uses_slot_mapping
+    device = torch.device("cuda")
+    tables = BlockTables(
+        block_sizes=[4],
+        max_num_reqs=2,
+        max_num_batched_tokens=8,
+        max_num_blocks_per_group=[1],
+        device=device,
+        kernel_block_sizes=[4],
+        slot_mapping_enabled=[spec.uses_slot_mapping],
+    )
+    for req, block in enumerate([7, 12]):
+        tables.append_block_ids(req, ([block],), overwrite=True)
+    tables.apply_staged_writes()
+    indices = torch.tensor([1, 0], dtype=torch.int32, device=device)
+    query = torch.tensor([0, 3, 6], dtype=torch.int32, device=device)
+    positions = torch.tensor(
+        [98135, 98136, 102224, 199999, 200000, 262143],
+        dtype=torch.int64,
+        device=device,
+    )
+    slots = tables.compute_slot_mappings(indices, query, positions, 8)[0]
+    assert slots.tolist() == [-1] * 8
+    blocks = tables.gather_block_tables(indices, 2)[0]
+    circular = compute_kpool_tail_slot_mapping(
+        slots, blocks, query, positions, 6, 2, 4
+    )
+    assert circular.tolist() == [51, 48, 48, 31, 28, 31, -1, -1]
+
+
 def test_block_tables_apply_staged_writes_fuses_kv_groups(monkeypatch):
     device = torch.device("cuda")
     block_tables = BlockTables(
