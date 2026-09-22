@@ -1280,13 +1280,13 @@ def _get_kv_cache_groups_glm5_next(
     ):
         return None
     mla_specs = cast(dict[str, MLAAttentionSpec], attn_specs)
-    idx_pages = {s.page_size_bytes for s in mla_specs.values() if s.compress_ratio > 1}
+    idx_pages = {s.page_size_bytes for s in mla_specs.values() if getattr(s, "tokens_per_state", 1) > 1}
     if not idx_pages:
         return None
 
     assert all(s.page_size_padded is None for s in mla_specs.values())
     assert len(idx_pages) == 1
-    mla_names = [n for n, s in mla_specs.items() if s.compress_ratio == 1]
+    mla_names = [n for n, s in mla_specs.items() if getattr(s, "tokens_per_state", 1) <= 1]
     mla_pages = {mla_specs[n].page_size_bytes for n in mla_names}
     assert len(mla_pages) == 1
     mla_page = mla_pages.pop()
@@ -1415,8 +1415,8 @@ def _glm5_next_tensor_layout(
     ):
         return None
     inner = cast(dict[str, MLAAttentionSpec], attn_uniform.kv_cache_specs)
-    mla_names = [n for n in attn_group.layer_names if inner[n].compress_ratio == 1]
-    idx_names = [n for n in attn_group.layer_names if inner[n].compress_ratio > 1]
+    mla_names = [n for n in attn_group.layer_names if getattr(inner[n], "tokens_per_state", 1) <= 1]
+    idx_names = [n for n in attn_group.layer_names if getattr(inner[n], "tokens_per_state", 1) > 1]
     mla_pages = {inner[n].page_size_bytes for n in mla_names}
     idx_pages = {inner[n].page_size_bytes for n in idx_names}
     if len(mla_pages) != 1 or len(idx_pages) != 1:
