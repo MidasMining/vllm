@@ -300,7 +300,11 @@ class Indexer(nn.Module):
         self.prefix = prefix
         from vllm.v1.attention.backends.mla.indexer import get_max_prefill_buffer_size
 
-        self.max_total_seq_len = get_max_prefill_buffer_size(vllm_config)
+        # Upstream PR #55222: the indexer prefill workspace is pool-granular;
+        # sizing it by raw tokens overallocates by index_kpool (4x here).
+        self.max_total_seq_len = (
+            get_max_prefill_buffer_size(vllm_config) // self.index_kpool
+        )
         self.indexer_op = SparseAttnIndexerKpool(
             self.k_cache,
             self.quant_block_size,
