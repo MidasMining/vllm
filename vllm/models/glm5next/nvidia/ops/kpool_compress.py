@@ -14,13 +14,18 @@ from __future__ import annotations
 
 import torch
 
+from vllm.v1.attention.ops.fp8_sm80 import _encode_e4m3fn_u8
+
 from vllm.triton_utils import tl, triton
 
-# The GLM-5.3-Flash indexer head dimension is fixed at 128.
+# The indexer head dim is fixed at 128 in the current GLM5Next config; the
+# Hadamard rotation below is the hard-coded H128 transform.
 INDEX_HEAD_DIM = 128
 
 
-# Hadamard-128 rotation
+# ---------------------------------------------------------------------------
+# Hadamard-128 rotation (ported verbatim from sglang)
+# ---------------------------------------------------------------------------
 
 
 @triton.jit
@@ -43,6 +48,19 @@ def _hadamard128(x):
     x = _hadamard128_stage(x, 2, 32)
     x = _hadamard128_stage(x, 1, 64)
     return x * 0.08838834764831845  # 1/sqrt(128)
+
+
+def _hadamard128_torch(x: torch.Tensor) -> torch.Tensor:
+    """Reference / fallback Hadamard-128 on the last dim (must be 128)."""
+    import math
+
+    n = x.shape[-1]
+    assert n == 128, f"_hadamard128 expects last dim 128, got {n}"
+    h = torch.tensor([[1.0, 1.0], [1.0, -1.0]], dtype=torch.float32, device=x.device)
+    while h.shape[0] < n:
+        h = torch.cat([torch.cat([h, h], dim=1), torch.cat([h, -h], dim=1)], dim=0)
+    h = h / math.sqrt(n)
+    return x @ h
 
 
 @triton.jit
@@ -68,8 +86,11 @@ def _fwht_quant_kernel(
 ):
     """Fused Hadamard-128 rotation + per-row absmax FP8 (ue8m0) quant.
 
-    Each row uses fp32 butterflies and scaling, rounds to bf16, then applies
-    absmax quantization with a power-of-two scale.
+    Per row of 128 elements (one indexer head): load bf16 -> fp32 butterflies
+    (exact adds/subs; the 1/sqrt(128) scale stays fp32) -> round to bf16 ->
+    absmax quant with power-of-2 scale. Numerically identical to the unfused
+    sglang chain ``rotate_activation(q)`` (fast FWHT, bf16 out) followed by
+    ``act_quant`` (absmax clamp 1e-4, exp2(ceil(log2)) scale, clamp +-448).
     """
     pid = tl.program_id(0)
     rows = pid * BLOCK_R + tl.arange(0, BLOCK_R)
@@ -101,15 +122,24 @@ def _fwht_quant_kernel(
     scale = tl.exp2(tl.ceil(tl.log2(absmax * (1.0 / 448.0))))
     y = tl.minimum(tl.maximum(x / scale[:, None], -448.0), 448.0)
 
-    tl.store(qout_ptr + rows[:, None] * 128 + offs[None, :], y, mask=rmask[:, None])
+    # Store through a uint8 view: SM80 Triton cannot emit the implicit
+    # fp32 -> fp8e4nv convert; _encode_e4m3fn_u8 keeps the hardware convert
+    # on SM89+ and is bit-exact software RNE below (fp8_sm80.py).
+    tl.store(
+        qout_ptr + rows[:, None] * 128 + offs[None, :],
+        _encode_e4m3fn_u8(y),
+        mask=rmask[:, None],
+    )
     tl.store(sout_ptr + rows, scale, mask=rmask)
 
 
 def fwht128_quant_fp8(q: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """Rotate each 128-wide row by the Hadamard-128 transform, then FP8-quant.
 
-    The fused kernel avoids materializing the rotated tensor and uses an exact
-    fp32 ``1 / sqrt(128)`` scale before block-128 ue8m0 quantization.
+    Replaces ``q @ H`` (bf16 GEMM whose H entries are bf16-rounded) plus
+    ``per_token_group_quant_fp8`` with one kernel: the rotation runs in fp32
+    with the exact 1/sqrt(128) constant (matching sglang's fast FWHT), and the
+    quant replicates sglang's ``act_quant`` (block 128, ue8m0 scale).
 
     Args:
         q: ``[rows, 128]`` bf16 — one head vector per row.
@@ -127,11 +157,61 @@ def fwht128_quant_fp8(q: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return q_fp8, q_scale
     BLOCK_R = 32
     grid = (triton.cdiv(n_rows, BLOCK_R),)
-    _fwht_quant_kernel[grid](q, q_fp8, q_scale, n_rows, BLOCK_R=BLOCK_R, num_warps=2)
+    _fwht_quant_kernel[grid](
+        q, q_fp8.view(torch.uint8), q_scale, n_rows, BLOCK_R=BLOCK_R, num_warps=2
+    )
     return q_fp8, q_scale
 
 
-# Fused pool compression and cache write.
+# ---------------------------------------------------------------------------
+# compute_pooled_write_locs : pool_id -> physical flat slot
+# ---------------------------------------------------------------------------
+
+
+def compute_pooled_write_locs(
+    page_table_64: torch.Tensor,
+    pool_ids: torch.Tensor,
+    pool_size: int,
+) -> torch.Tensor:
+    """Map logical pooled-K ids to physical flat cache slots.
+
+    ``pool_size`` consecutive tokens share one pool slot that lives at the
+    *first* token page of each page-group. ``page_table_64`` maps token pages
+    to physical block ids; we gather the block id of each pool's page-group
+    and add the in-block pool offset.
+    """
+    assert page_table_64.ndim == 1
+    pool_ids = pool_ids.to(torch.int64)
+    block_size = 64  # indexer cache page size (matches sglang hard-code)
+    pool_page_group = torch.div(pool_ids, block_size, rounding_mode="floor")
+    token_page_row = pool_page_group * pool_size
+    packed_page = page_table_64.index_select(0, token_page_row.to(torch.int64))
+    return packed_page.to(torch.int64) * block_size + torch.remainder(
+        pool_ids, block_size
+    )
+
+
+def build_pooled_page_table(
+    page_table: torch.Tensor,
+    pool_size: int,
+) -> torch.Tensor:
+    """Build a pool-granular page table by taking every ``pool_size``-th
+    token-page column (one pool maps to ``pool_size`` token pages).
+
+    Uses gather (not strided slicing) so the result is always a fresh
+    row-major tensor — some downstream kernels require stride(-1) == 1.
+    """
+    block_size = page_table.shape[-1]
+    assert block_size % pool_size == 0, (
+        f"pool_size ({pool_size}) must divide page columns ({block_size})"
+    )
+    idx = torch.arange(0, block_size, pool_size, device=page_table.device)
+    return page_table[..., idx].contiguous()
+
+
+# ---------------------------------------------------------------------------
+# kpool_softmax_rotate_write_cache : the fused compress-write kernel
+# ---------------------------------------------------------------------------
 
 
 @triton.jit
@@ -214,7 +294,9 @@ def _kpool_softmax_rotate_write_cache_kernel(
     x = acc / denom
     x = tl.where(do_write, x, 0.0).to(tl.bfloat16).to(tl.float32)
 
-    # Match the unfused pooled-K path's bf16 precision before quantization.
+    # Hadamard-128 rotation (spreads energy for uniform fp8 quant error).
+    # Match sglang: bf16 round-trip after the Hadamard so the fp8 absmax/scale
+    # sees the same precision as the unfused (bf16-stored) pooled-K path.
     x = _hadamard128(x).to(tl.bfloat16).to(tl.float32)
 
     # --- per-vector absmax fp8 quant ---
@@ -243,13 +325,14 @@ def _kpool_softmax_rotate_write_cache_kernel(
             + S_OFFSET_NBYTES_IN_PAGE // 4
             + loc_token_offset_in_page
         )
-        tl.store(buf_fp8_ptr + out_k_offsets, quantized, mask=mask)
+        # uint8 pointer + explicit e4m3fn encode (SM80-safe, see fp8_sm80.py).
+        tl.store(buf_fp8_ptr + out_k_offsets, _encode_e4m3fn_u8(quantized), mask=mask)
         tl.store(buf_fp32_ptr + out_s_offset, scale, mask=do_write)
 
     if RETURN_COMPRESSED:
         tl.store(
             compressed_k_ptr + row * HEAD_DIM + offs,
-            quantized,
+            _encode_e4m3fn_u8(quantized),
             mask=offs < HEAD_DIM,
         )
         tl.store(compressed_scale_ptr + row, scale)
@@ -334,14 +417,14 @@ def kpool_compress_and_write_cache(
         compressed_scale = buf_fp32
 
     _kpool_softmax_rotate_write_cache_kernel[(slot_k.shape[0],)](
-        buf_fp8,
+        buf_fp8.view(torch.uint8),
         buf_fp32,
         slot_k,
         slot_score,
         ape,
         loc,
         write_mask,
-        compressed_k,
+        compressed_k.view(torch.uint8),
         compressed_scale,
         slot_k.stride(0),
         slot_k.stride(1),
@@ -365,7 +448,13 @@ def kpool_compress_and_write_cache(
     return None
 
 
-# Seed each request's incomplete pool into its paged tail during prefill.
+# ---------------------------------------------------------------------------
+# kpool_seed_tail_cache : prefill step
+# Persist each request's trailing (<= pool_size) raw K + gate score into the
+# paged tail ring, replacing the nonzero/boolean-mask scatter chain (which
+# cost ~12 elementwise ops + 4 device syncs per layer on the eager prefill
+# path). One program per prefill token; most exit after two loads.
+# ---------------------------------------------------------------------------
 
 
 @triton.jit
@@ -434,7 +523,18 @@ def kpool_seed_tail_cache(
     )
 
 
-# Update each request's tail during decode and write completed pools.
+# ---------------------------------------------------------------------------
+# kpool_decode_update_and_maybe_write_cache_batched : decode step
+# Append each request's verify tokens to its per-request tail ring; when a pool
+# fills (pos % pool_size == pool_size-1), compress and write at the pool slot.
+# One launch over [num_requests, next_n]; the kernel iterates each request's
+# tokens in position order (see the kernel docstring for the completion
+# read-after-stash dependency). Plain decode collapses to next_n == 1.
+#
+# vLLM simplification vs sglang: compress_ratio makes slot_mapping hand us the
+# pool slot directly at pool completion, so the write loc == cache_loc. No
+# block_table recomputation needed.
+# ---------------------------------------------------------------------------
 
 
 @triton.jit
@@ -589,7 +689,12 @@ def _kpool_decode_update_batched_kernel(
                 + S_OFFSET_NBYTES_IN_PAGE // 4
                 + loc_token_offset_in_page
             )
-            tl.store(buf_fp8_ptr + out_k_offsets, quantized, mask=dim_mask)
+            # uint8 pointer + explicit e4m3fn encode (SM80-safe).
+            tl.store(
+                buf_fp8_ptr + out_k_offsets,
+                _encode_e4m3fn_u8(quantized),
+                mask=dim_mask,
+            )
             tl.store(buf_fp32_ptr + out_s_offset, scale)
 
         # Stash the current token AFTER any completion read so the completion
@@ -637,11 +742,9 @@ def kpool_decode_update_and_maybe_write_cache_batched(
         tail_kv_cache: paged tail cache ``[num_blocks, 2, pool_size, head_dim]``
             bf16 (K at half 0, gate score at half 1).
         tail_slot_mapping: ``[num_requests, next_n]`` int32.
-        key: ``[num_requests, next_n, head_dim]`` bf16.
-        slot_score: ``[num_requests, next_n, head_dim]`` bf16.
+        key / slot_score: ``[num_requests, next_n, head_dim]`` bf16.
         ape: ``[pool_size, head_dim]`` fp32.
-        slot_mapping: ``[num_requests, next_n]`` int32.
-        positions: ``[num_requests, next_n]`` int32.
+        slot_mapping / positions: ``[num_requests, next_n]`` int32.
     """
     num_requests, next_n = key.shape[0], key.shape[1]
     if num_requests == 0 or next_n == 0:
@@ -676,7 +779,7 @@ def kpool_decode_update_and_maybe_write_cache_batched(
     positions = positions.contiguous()
 
     _kpool_decode_update_batched_kernel[(num_requests,)](
-        buf_fp8,
+        buf_fp8.view(torch.uint8),
         buf_fp32,
         tail_kv_cache,
         tail_slot_mapping,
@@ -703,7 +806,9 @@ def kpool_decode_update_and_maybe_write_cache_batched(
     )
 
 
-# Pool-level top-k helpers.
+# ---------------------------------------------------------------------------
+# Pool-level topk helpers: select pools -> expand to tokens -> append tail
+# ---------------------------------------------------------------------------
 
 
 def history_group_budget_for_topk(topk: int, pool_size: int) -> int:
@@ -868,7 +973,7 @@ def expand_pools_and_append_tail(
 
     Produces the same ``[rows, topk + pool_size - 1]`` int32 output as calling
     the two functions in sequence when neither ``page_table`` nor
-    ``topk_offsets`` is passed — the only path used by the GLM-5.3-Flash indexer.
+    ``topk_offsets`` is passed — the only path the GLM5Next indexer exercises.
     The kernel derives ``pool_len = seq_len // pool_size`` internally, so the
     caller no longer needs to precompute it. Replaces ~25 elementwise kernels
     with one Triton launch.
