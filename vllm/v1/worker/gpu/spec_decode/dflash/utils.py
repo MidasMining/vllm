@@ -13,6 +13,7 @@ from vllm.v1.worker.gpu.spec_decode.eagle.utils import (
     get_target_lm_head,
     maybe_share_target_embed,
 )
+from vllm.distributed.parallel_state import get_pp_group
 from vllm.v1.worker.gpu.spec_decode.utils import get_pp_safe_draft_load_config
 
 
