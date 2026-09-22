@@ -269,7 +269,11 @@ class XPUMLASparseImpl(MLAAttentionImpl[XPUMLASparseMetadata], SharedTopkIndices
             topk_indices,
             BLOCK_SIZE=attn_metadata.block_size,
             BLOCK_STRIDE_ROWS=block_stride_rows,
-            NUM_TOPK_TOKENS=attn_metadata.topk_tokens,
+            # The kpool indexer widens the buffer past index_topk: pool tail
+            # (+ rounding to a BLOCK_N=128 multiple). Extra slots are -1 and
+            # masked out by the sparse attention kernel — pass the buffer's
+            # real width, not the config topk.
+            NUM_TOPK_TOKENS=topk_indices.shape[1],
         )
 
         attn_out = self._forward_bf16_kv(q, kv_rows, topk_indices_global, attn_metadata)
