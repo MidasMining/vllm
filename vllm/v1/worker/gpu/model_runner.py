@@ -2250,7 +2250,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 # their next-step combine_sampled_and_draft_tokens reads real
                 # values instead of zero-init (otherwise acceptance ~= 0 and the
                 # output is garbage). Must be issued after propose().
-                self.pp_handler.broadcast_draft(draft_tokens, input_batch)
+                self.pp_handler.broadcast_drafts(draft_tokens, input_batch)
             if self.adaptive_verification is not None:
                 self.adaptive_verification.record_confidences(
                     self.speculator.draft_token_confidence_probs, input_batch
