@@ -1825,8 +1825,10 @@ def get_kv_cache_config_from_groups(
         kv_cache_tensors = [
             KVCacheTensor(
                 size=mla_page * num_blocks,
-                shared_by=[mla_name]
+                layers=[mla_name]
                 + [g.layer_names[i] for g in mamba_groups if i < len(g.layer_names)],
+                layer_stride=0,
+                block_stride=mla_page,
             )
             for i, mla_name in enumerate(mla_names)
         ] + [
@@ -1836,9 +1838,11 @@ def get_kv_cache_config_from_groups(
             # the runner carve a strided bf16 tail view out of this storage.
             KVCacheTensor(
                 size=idx_page * num_blocks,
-                shared_by=(
+                layers=(
                     [idx_names[i], tail_names[i]] if tail_names else [idx_names[i]]
                 ),
+                layer_stride=0,
+                block_stride=idx_page,
             )
             for i in range(len(idx_names))
         ] + [
@@ -1846,7 +1850,9 @@ def get_kv_cache_config_from_groups(
             # tensors at their own page size, no slot sharing.
             KVCacheTensor(
                 size=g.kv_cache_spec.page_size_bytes * num_blocks,
-                shared_by=[layer_name],
+                layers=[layer_name],
+                layer_stride=0,
+                block_stride=g.kv_cache_spec.page_size_bytes,
             )
             for g in sidecar_groups
             for layer_name in g.layer_names
