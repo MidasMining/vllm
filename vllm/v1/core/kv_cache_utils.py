@@ -1091,6 +1091,17 @@ def get_max_concurrency_for_kv_cache_config(
             host_blocks_per_request += required
         else:
             num_blocks_per_request += required
+    logger.info_once(
+        "capacity inputs: num_blocks=%d blocks_per_request=%d groups=%s",
+        kv_cache_config.num_blocks, num_blocks_per_request,
+        [
+            (g.layer_names[:1], len(g.layer_names),
+             g.kv_cache_spec.page_size_bytes,
+             cdiv(g.kv_cache_spec.max_memory_usage_bytes(vllm_config),
+                  g.kv_cache_spec.page_size_bytes))
+            for g in kv_cache_config.kv_cache_groups
+        ],
+    )
     limits = [kv_cache_config.num_blocks / num_blocks_per_request]
     if host_blocks_per_request:
         assert kv_cache_config.hisparse_host_num_blocks is not None
@@ -1893,6 +1904,12 @@ def get_kv_cache_config_from_groups(
                 )
                 _off += g.kv_cache_spec.page_size_bytes * num_blocks
         assert _off == arena, (_off, arena)
+        logger.info(
+            "glm5n config: num_blocks=%d per_block=%d (mla %d*%d idx %d*%d "
+            "sidecar %d) available=%d",
+            num_blocks, per_block, len(mla_names), mla_page, len(idx_names),
+            idx_page, sidecar_per_block, available_memory,
+        )
         # The glm5n layout is complete: heterogeneous per-tensor page sizes by
         # construction, so skip the generic uniform-layout validation below.
         return KVCacheConfig(
