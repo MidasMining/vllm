@@ -1237,7 +1237,7 @@ def _reblock_glm5n_sidecar_specs(
     out: dict[str, KVCacheSpec] = {}
     changed: list[tuple[str, int, int]] = []
     for name, spec in sidecar_specs.items():
-        if not isinstance(spec, AttentionSpec) or spec.block_size >= block_size:
+        if not isinstance(spec, AttentionSpec) or spec.block_size == block_size:
             out[name] = spec
             continue
         # v0.30's uniform-page unifier may have padded this spec to a
