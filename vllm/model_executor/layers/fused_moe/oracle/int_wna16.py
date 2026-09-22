@@ -538,7 +538,7 @@ def _pad_w13_bias(bias: torch.Tensor, n: int, padded_n: int) -> torch.Tensor:
     return bias.reshape(e, 2 * padded_n).contiguous()
 
 
-def _cmp170hx_release_slack(threshold_gib: float = 2.0) -> None:
+def _cmp170hx_release_slack(threshold_gib: float = 0.0) -> None:
     """170HX (cmp170hx-highva-ce-fault): allocations made while multi-GiB
     reserved-but-free slack exists reuse cached high-VA blocks that the
     GPU faults on (Xid 31 REGION_VIOLATION). Call before each allocating
@@ -547,7 +547,7 @@ def _cmp170hx_release_slack(threshold_gib: float = 2.0) -> None:
         return
     r = torch.cuda.memory_reserved()
     a = torch.cuda.memory_allocated()
-    if r - a > threshold_gib * 2**30:
+    if r - a > threshold_gib * 2**30 and r > a:
         print(
             f"[REPACK_MEM] slack={(r - a)/2**30:.1f}GiB "
             f"reserved={r/2**30:.1f} alloc={a/2**30:.1f} — empty_cache",
@@ -635,6 +635,7 @@ def _process_weights_marlin(
         if w13_bias is not None:
             w13_bias = _pad_w13_bias(w13_bias, N, padded_N)
 
+    _cmp170hx_release_slack()
     # --- Repack weights ---
     _cmp170hx_release_slack()
     marlin_w13_qweight = ops.gptq_marlin_moe_repack(
