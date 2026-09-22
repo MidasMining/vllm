@@ -1404,7 +1404,13 @@ def _glm5_next_tensor_layout(
     # per-layer tensors sized by their own page.
     core_ids = {id(attn_group)} | ({id(tail_group)} if tail_group else set())
     core_ids |= {id(g) for g in mamba_groups}
-    sidecar_groups = [g for g in kv_cache_groups if id(g) not in core_ids]
+    # Skip empty-layer placeholder groups: under PP, groups are global and a
+    # rank without a group's layers sees it with layer_names=[] — zero local
+    # demand, but counting its spec pages inflates blocks_needed (observed:
+    # 41 phantom blocks of 108MB draft pages shrinking the pool to 153k).
+    sidecar_groups = [
+        g for g in kv_cache_groups if id(g) not in core_ids and g.layer_names
+    ]
     if any(
         isinstance(g.kv_cache_spec, (UniformTypeKVCacheSpecs, MambaSpec))
         for g in sidecar_groups
