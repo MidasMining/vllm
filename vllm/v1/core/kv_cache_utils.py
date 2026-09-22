@@ -1417,6 +1417,11 @@ def unify_kv_cache_spec_page_size(
             ):
                 new_spec = replace(layer_spec, page_size_padded=max_page_size)
             else:
+                page_map = {
+                    n: (sp.page_size_bytes, sp.block_size,
+                        type(sp).__name__)
+                    for n, sp in kv_cache_spec.items()
+                }
                 raise NotImplementedError(
                     f"Layer {layer_name}: page size is not divisible by the "
                     "maximum page size and cannot be padded. Padding is only "

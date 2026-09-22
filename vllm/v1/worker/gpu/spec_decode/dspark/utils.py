@@ -1,6 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import json
+import os
+
+import torch
 import torch.nn as nn
 
 from vllm.config import ModelConfig, ParallelConfig, VllmConfig, replace
@@ -51,6 +55,66 @@ def _get_dspark_parallel_config(
             num_redundant_experts=0,
         ),
         enable_elastic_ep=False,
+    )
+
+logger = init_logger(__name__)
+
+# Checkpoint names the token embedding can appear under, most specific first.
+_EMBED_KEYS = (
+    "embed.weight",
+    "model.embed_tokens.weight",
+    "model.embed.weight",
+    "embed_tokens.weight",
+)
+
+
+def _has_real_weight(module) -> bool:
+    """True for a materialised layer; False for PPMissingLayer / None.
+
+    Under pipeline parallelism vLLM replaces the layers a rank does not own with
+    PPMissingLayer, which has no ``weight``. Aliasing one of those into the draft
+    silently produces a no-op layer rather than an error, so check explicitly.
+    """
+    return module is not None and getattr(module, "weight", None) is not None
+
+
+def _load_embed_from_checkpoint(embed: nn.Module, model_path: str) -> None:
+    """Fill the draft's own token embedding straight from the checkpoint.
+
+    Only needed under PP: the drafter runs on the LAST pipeline rank, but the
+    target's ``embed_tokens`` lives on the FIRST, so there is nothing local to
+    alias. Reading the one tensor off disk (~1 GB) avoids adding a cross-rank
+    collective to model load, which would have to be ordered against every other
+    rank's initialisation.
+    """
+    from safetensors import safe_open
+
+    index_path = os.path.join(model_path, "model.safetensors.index.json")
+    key = shard = None
+    if os.path.exists(index_path):
+        with open(index_path) as f:
+            weight_map = json.load(f)["weight_map"]
+        for cand in _EMBED_KEYS:
+            if cand in weight_map:
+                key, shard = cand, os.path.join(model_path, weight_map[cand])
+                break
+    if key is None:
+        raise RuntimeError(
+            f"DSpark+PP: could not find a token-embedding tensor in {index_path}; "
+            f"looked for {_EMBED_KEYS}. The draft needs its own copy because the "
+            "target's embedding lives on PP rank 0."
+        )
+
+    with safe_open(shard, framework="pt") as f:
+        w = f.get_tensor(key)
+    with torch.no_grad():
+        # VocabParallelEmbedding pads the vocab dimension, so copy into the
+        # leading rows rather than assigning the whole tensor.
+        embed.weight.data[: w.shape[0]].copy_(
+            w.to(dtype=embed.weight.dtype, device=embed.weight.device)
+        )
+    logger.info(
+        "DSpark+PP: loaded draft token embedding %s from key %r", tuple(w.shape), key
     )
 
 
@@ -131,5 +195,12 @@ def load_dspark_model(target_model: nn.Module, vllm_config: VllmConfig) -> nn.Mo
         if draft_lm_head is not None:
             del draft_model.lm_head
         draft_model.lm_head = target_lm_head
+    elif is_pp and not _has_real_weight(target_lm_head):
+        # Should not happen: the drafter runs on the last rank, which owns
+        # lm_head. Fail loudly rather than silently drafting through a no-op.
+        raise RuntimeError(
+            "DSpark+PP: the target lm_head is not materialised on this rank. The "
+            "drafter is expected to run on the last pipeline rank."
+        )
 
     return draft_model

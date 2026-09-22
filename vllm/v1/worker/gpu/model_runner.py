@@ -28,7 +28,37 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from vllm.triton_utils import tl, triton
+
+
+@triton.jit
+def _scatter_draft_tokens_kernel(
+    dst_ptr,
+    dst_stride,
+    src_ptr,
+    src_stride,
+    idx_ptr,
+    K,
+    BLOCK_K: tl.constexpr,
+):
+    """Row-scatter draft tokens by idx_mapping, skipping idx < 0 in-kernel.
+
+    Replaces `dst[idx[valid]] = src[valid]`: boolean-mask indexing calls
+    nonzero() under the hood, whose output size forces a device->host sync.
+    On every non-last PP rank, per step, those syncs serialize down the
+    pipeline and dominate the spec-decode step time.
+    """
+    r = tl.program_id(0)
+    idx = tl.load(idx_ptr + r)
+    if idx < 0:
+        return
+    offs = tl.arange(0, BLOCK_K)
+    mask = offs < K
+    vals = tl.load(src_ptr + r * src_stride + offs, mask=mask, other=0)
+    tl.store(dst_ptr + idx * dst_stride + offs, vals, mask=mask)
+
 import vllm.envs as envs
+from vllm.v1.worker.gpu.stage_timing import STAGE as _STAGE
 from vllm.compilation.counter import compilation_counter
 from vllm.compilation.cuda_graph import CUDAGraphStat
 from vllm.config import VllmConfig
@@ -286,6 +316,18 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             ):
                 # Drafting may require auxiliary hidden states from target model outputs
                 self.use_aux_hidden_state_outputs = True
+                # DSpark + PP is enabled here (see pp_utils.broadcast_draft and
+                # dspark/utils.load_dspark_model). It works because the drafter is
+                # already built on the last PP rank only (above), and for
+                # DeepSeek-V4 the aux-hidden-state taps (dspark_target_layer_ids
+                # = [40,41,42] of 43 layers) plus lm_head all land on that same
+                # last rank. eagle3/dflash keep the guard -- untested, and their
+                # aux layers are spread across ranks.
+                if self.use_pp and self.speculative_config.method not in ("dspark", "dflash"):
+                    raise ValueError(
+                        f"{self.speculative_config.method} with pipeline parallel "
+                        "is not supported."
+                    )
 
         # Draft tokens propagation - for spec-dec + struct outputs.
         self.draft_tokens_handler = DraftTokensHandler(self.device)
@@ -1115,7 +1157,47 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 self.req_states.draft_tokens
             )
             if outputs is not None:
+                # Spec decode: scatter the relayed proposed draft tokens into this
+                # rank's state so the next step's combine_sampled_and_draft_tokens
+                # reads real values instead of zero-init (which gives ~0 acceptance
+                # and corrupt output). Pop before postprocess_sampled, which does
+                # not accept this kwarg. idx_mapping is -1 for excluded/freed reqs.
+                draft_tokens = outputs.pop("draft_tokens", None)
+                idx_mapping = outputs["idx_mapping"]
                 self.postprocess_sampled(**outputs)
+                if draft_tokens is not None:
+                    # Sync-free row scatter (see _scatter_draft_tokens_kernel):
+                    # invalid rows (idx_mapping < 0) are skipped in-kernel, so
+                    # no boolean-mask indexing (= nonzero + host sync) runs on
+                    # the per-step critical path of every non-last rank.
+                    num_rows, k = draft_tokens.shape
+                    if num_rows > 0:
+                        dst = self.req_states.draft_tokens
+                        src = draft_tokens.to(dst.dtype)
+                        _scatter_draft_tokens_kernel[(num_rows,)](
+                            dst,
+                            dst.stride(0),
+                            src,
+                            src.stride(0),
+                            idx_mapping,
+                            k,
+                            BLOCK_K=max(1, triton.next_power_of_2(k)),
+                        )
+                    import os as _os
+
+                    if _os.environ.get("VLLM_PP_DRAFT_DEBUG") == "1":
+                        if not hasattr(self, "_dbg_recv"):
+                            self._dbg_recv = 0
+                        if self._dbg_recv < 6 and draft_tokens.numel():
+                            self._dbg_recv += 1
+                            import torch.distributed as _dist
+
+                            print(
+                                f"[DRAFT_DBG recv rank={_dist.get_rank()}] "
+                                f"shape={tuple(draft_tokens.shape)} "
+                                f"row0={draft_tokens[0].tolist()}",
+                                flush=True,
+                            )
 
     def add_requests(self, scheduler_output: SchedulerOutput) -> None:
         for new_req_data in scheduler_output.scheduled_new_reqs:
@@ -1653,6 +1735,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                     scheduler_output, empty_output
                 )
 
+        _STAGE.mark("entry")
         # Get batch descriptor and sync across DP ranks.
         num_reqs = len(scheduler_output.num_scheduled_tokens)
         num_toks = scheduler_output.total_num_scheduled_tokens
@@ -1889,6 +1972,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             input_batch, batch_desc.cg_mode == CUDAGraphMode.FULL
         )
         self.step_timing.forward_start()
+        _STAGE.mark("fwd0")
+        _STAGE.event("fwd0")
 
         connector_kwargs = dict(
             scheduler_output=scheduler_output,
@@ -1948,6 +2033,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                     model_output = self.model(**model_inputs)
 
         self.kv_connector.finish_forward()
+        _STAGE.event("fwd1")
+        _STAGE.mark("fwd1")
 
         if self.is_last_pp_rank:
             if self.use_aux_hidden_state_outputs:
@@ -1983,6 +2070,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             cudagraph_stats=cudagraph_stats,
         )
 
+        _STAGE.mark("exit")
+        _STAGE.end_step(dummy_run)
         if not self.is_last_pp_rank:
             # Non-last PP rank: return IntermediateTensors for sending.
             assert output_intermediate_tensors is not None
@@ -2156,6 +2245,12 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                     mm_inputs=mm_inputs,
                 )
             self.req_states.draft_tokens[input_batch.idx_mapping] = draft_tokens
+            if self.pp_handler is not None:
+                # Relay the proposed draft tokens to the non-last PP ranks so
+                # their next-step combine_sampled_and_draft_tokens reads real
+                # values instead of zero-init (otherwise acceptance ~= 0 and the
+                # output is garbage). Must be issued after propose().
+                self.pp_handler.broadcast_draft(draft_tokens, input_batch)
             if self.adaptive_verification is not None:
                 self.adaptive_verification.record_confidences(
                     self.speculator.draft_token_confidence_probs, input_batch

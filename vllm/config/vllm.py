@@ -693,6 +693,12 @@ class VllmConfig:
         if use_v2_model_runner is not None:
             return use_v2_model_runner
 
+        # The DFlash2 candidate selector exists only in the V2 speculator. On V1
+        # the same checkpoint drafts through DFlashProposer, which never calls
+        # it, so the draft degrades to DFlash1 silently. Force V2 as for dspark.
+        if self._is_dflash2_draft():
+            return True
+
         from vllm.platforms import current_platform
 
         model_config = self.model_config

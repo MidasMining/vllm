@@ -70,6 +70,7 @@ from vllm.model_executor.models.utils import (
     PPMissingLayer,
     init_vllm_registered_model,
     is_pp_missing_parameter,
+    make_empty_intermediate_tensors_factory,
     make_layers,
     maybe_prefix,
     sequence_parallel_chunk,
@@ -694,6 +695,58 @@ class Glm5NextModel(nn.Module):
             "num_attention_heads must be divisible by world_size"
         )
 
+        # PP: the tensor shipped across a stage boundary. With mHC on, the
+        # hop carries the materialized residual streams [T, n, H] (the
+        # sending stage folds its deferred hc_post in before the send — see
+        # forward); without mHC it is the plain [T, H] hidden states.
+        # DFlash/EAGLE3 aux hidden-state taps: vllm layer-id semantics, id k
+        # means "after decoder layer k-1" (HF hidden_states[k]). Empty tuple =
+        # disabled; the runner sets this via set_aux_hidden_state_layers().
+        self.aux_hidden_state_layers: tuple[int, ...] = ()
+        # Last-rank output staging for aux states. The forward's aux tensors
+        # are views over piecewise-cudagraph output buffers; under async
+        # scheduling the NEXT step's forward reuses those buffers before the
+        # drafter consumes them, clobbering every other step's aux (drafts
+        # alternate good/garbage, halving acceptance). Copy into persistent
+        # buffers INSIDE the forward -- the same trick DeepSeek-V4 uses for
+        # its MTP hidden buffer. Allocated lazily on the last rank at first
+        # aux-enabled forward (before any graph capture; warmup runs first).
+        self._aux_out_buffers: list[torch.Tensor] | None = None
+        self._max_num_batched_tokens = (
+            vllm_config.scheduler_config.max_num_batched_tokens
+        )
+
+        if getattr(config, "mhc", False):
+            n_streams = config.mhc_num_residual_streams
+            hidden_size = config.hidden_size
+
+            def _make_empty_intermediate_tensors(
+                batch_size: int, dtype: torch.dtype, device: torch.device
+            ) -> IntermediateTensors:
+                tensors = {
+                    "hidden_states": torch.zeros(
+                        (batch_size, n_streams, hidden_size),
+                        dtype=dtype,
+                        device=device,
+                    )
+                }
+                # Aux taps are spread across PP stages; ship every slot on
+                # every hop (fixed key set so the send/recv dicts always
+                # match), earlier stages leave later slots zeroed.
+                for k in range(len(self.aux_hidden_state_layers)):
+                    tensors[f"aux_hidden_{k}"] = torch.zeros(
+                        (batch_size, hidden_size), dtype=dtype, device=device
+                    )
+                return IntermediateTensors(tensors)
+
+            self.make_empty_intermediate_tensors = _make_empty_intermediate_tensors
+        else:
+            self.make_empty_intermediate_tensors = (
+                make_empty_intermediate_tensors_factory(
+                    ["hidden_states"], config.hidden_size
+                )
+            )
+
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
 
@@ -715,10 +768,14 @@ class Glm5NextModel(nn.Module):
             comb = None
         else:
             assert intermediate_tensors is not None
+            # The sending stage materialized its deferred hc_post into the
+            # residual streams before the hop (see the not-last-rank return
+            # below), so the shipped hidden_states ARE the streams. This
+            # rank's first mHC layer takes them as its residual input and
+            # runs a standalone hc_pre (post is None ⇒ residual = x there),
+            # so no separate residual tensor crosses the hop.
             hidden_states = intermediate_tensors["hidden_states"]
-            residual = intermediate_tensors["residual"]
-            # post/comb (deferred mHC hc_post state) are not propagated across
-            # PP ranks; the receiving rank's first mHC layer uses standalone pre.
+            residual = None
             post = None
             comb = None
 
@@ -726,25 +783,111 @@ class Glm5NextModel(nn.Module):
         if self.is_sequence_parallel:
             hidden_states = sp_shard(hidden_states)
 
-        for layer in self._active_layers:
+        # DFlash/EAGLE3 aux taps: slot k holds the materialized single-stream
+        # hidden state after layer aux_ids[k]-1 (HF hidden_states semantics;
+        # streams contracted by mean over the mHC dim, matching DeepSeek-V4's
+        # DSpark collection and the DFlash2 drafter's fc input width). Slots
+        # for taps on earlier stages arrive via IntermediateTensors.
+        aux_ids = self.aux_hidden_state_layers
+        aux_slots: list[torch.Tensor | None] = [None] * len(aux_ids)
+        if aux_ids and intermediate_tensors is not None:
+            for k in range(len(aux_ids)):
+                aux_slots[k] = intermediate_tensors[f"aux_hidden_{k}"]
+
+        for idx, layer in enumerate(self._active_layers, start=self.start_layer):
             hidden_states, residual, post, comb = layer(
                 positions, hidden_states, residual, post, comb
             )
+            if aux_ids and (idx + 1) in aux_ids:
+                if post is not None:
+                    aux = layer.hc_post(hidden_states, residual, post, comb)
+                else:
+                    aux = hidden_states
+                import os as _os
+                _dump = _os.environ.get("VLLM_DUMP_AUX_DIR")
+                if _dump and not getattr(self, "_dump_gate_dbg", False):
+                    self._dump_gate_dbg = True
+                    print(
+                        f"[AUXDUMP_GATE dump={_dump} dim={aux.dim()} "
+                        f"capturing={torch.cuda.is_current_stream_capturing()} "
+                        f"arm={_os.path.exists(f'{_dump}/ARM')} idx={idx}]",
+                        flush=True,
+                    )
+                if (
+                    _dump
+                    and aux.dim() == 3
+                    and not torch.cuda.is_current_stream_capturing()
+                    and _os.path.exists(f"{_dump}/ARM")
+                ):
+                    _n = getattr(self, "_aux_dump_n", 0)
+                    if _n < 40:
+                        try:
+                            self._aux_dump_n = _n + 1
+                            torch.save(
+                                aux.detach().to(torch.float32).cpu(),
+                                f"{_dump}/streams_L{idx}_{_n:03d}.pt",
+                            )
+                        except Exception:
+                            pass
+                if aux.dim() == 3:
+                    aux = aux.mean(dim=1)
+                if self.is_sequence_parallel:
+                    aux = sp_all_gather(aux)[:full_num_tokens]
+                aux_slots[aux_ids.index(idx + 1)] = aux
 
         if not get_pp_group().is_last_rank:
-            # PP is gated off for GLM-5.3-Flash (no make_empty_intermediate_tensors),
-            # so this branch is not exercised. post/comb are the deferred
-            # hc_post state of this rank's last mHC layer; a future PP path
-            # would need to propagate them, but for now they are dropped (the
-            # receiving rank's first layer would fall back to standalone pre).
-            return IntermediateTensors(
-                {"hidden_states": hidden_states, "residual": residual}
-            )
+            if post is not None:
+                # Materialize this stage's deferred hc_post into the residual
+                # streams before the hop: post/comb cannot cross PP ranks, and
+                # dropping them would silently lose the stage's last layer's
+                # MLP contribution. The receiving rank's first mHC layer then
+                # runs a standalone hc_pre on the shipped streams.
+                last_layer = self._active_layers[-1]
+                hidden_states = last_layer.hc_post(
+                    hidden_states, residual, post, comb
+                )
+            out = {"hidden_states": hidden_states}
+            for k, aux in enumerate(aux_slots):
+                if aux is None:
+                    aux = hidden_states.new_zeros(
+                        (hidden_states.shape[0], hidden_states.shape[-1])
+                    )
+                else:
+                    # Locally collected aux is a view over piecewise-cudagraph
+                    # output buffers; under async scheduling the next forward
+                    # clobbers it before the NCCL hop completes (every other
+                    # step's aux turned to garbage downstream). The main
+                    # hidden_states hop is safe only because hc_post
+                    # materialization happens to allocate fresh; mirror that.
+                    # This runs outside captured regions, so the allocation is
+                    # harmless.
+                    aux = aux.clone()
+                out[f"aux_hidden_{k}"] = aux
+            return IntermediateTensors(out)
 
         if self.is_sequence_parallel:
             hidden_states = sp_all_gather(hidden_states)[:full_num_tokens]
 
         hidden_states = self.norm(hidden_states)
+        if aux_ids:
+            assert all(a is not None for a in aux_slots)
+            if self._aux_out_buffers is None:
+                self._aux_out_buffers = [
+                    torch.zeros(
+                        (self._max_num_batched_tokens, hidden_states.shape[-1]),
+                        dtype=hidden_states.dtype,
+                        device=hidden_states.device,
+                    )
+                    for _ in range(len(aux_ids))
+                ]
+            staged: list[torch.Tensor] = []
+            for k, aux in enumerate(aux_slots):
+                assert aux is not None
+                buf = self._aux_out_buffers[k]
+                n = aux.shape[0]
+                buf[:n].copy_(aux)
+                staged.append(buf[:n])
+            return hidden_states, staged
         return hidden_states
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
@@ -955,9 +1098,26 @@ class Glm5NextForCausalLM(
         self.logits_processor = LogitsProcessor(
             self.config.vocab_size, scale=self.config.logit_scale
         )
+        self.make_empty_intermediate_tensors = (
+            self.model.make_empty_intermediate_tensors
+        )
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.embed_input_ids(input_ids)
+
+    # DFlash/EAGLE3 aux hidden-state interface (SupportsEagle3 protocol).
+    # The runtime_checkable isinstance also requires the SupportsEagleBase
+    # data members to exist on the instance (protocol defaults don't count).
+    supports_eagle3: ClassVar[Literal[True]] = True
+    has_own_lm_head: bool = False
+    has_own_embed_tokens: bool = False
+
+    def set_aux_hidden_state_layers(self, layers: tuple[int, ...]) -> None:
+        self.model.aux_hidden_state_layers = tuple(layers)
+
+    def get_eagle3_default_aux_hidden_state_layers(self) -> tuple[int, ...]:
+        num_layers = self.config.num_hidden_layers
+        return (2, num_layers // 2, num_layers - 3)
 
     def forward(
         self,
@@ -1061,6 +1221,17 @@ class Glm5NextForConditionalGeneration(
 
         return Glm5NextForCausalLM.get_mamba_state_copy_func()
 
+    # DFlash/EAGLE3 aux hidden-state interface: delegate to the text tower.
+    supports_eagle3: ClassVar[Literal[True]] = True
+    has_own_lm_head: bool = False
+    has_own_embed_tokens: bool = False
+
+    def set_aux_hidden_state_layers(self, layers: tuple[int, ...]) -> None:
+        self.language_model.set_aux_hidden_state_layers(layers)
+
+    def get_eagle3_default_aux_hidden_state_layers(self) -> tuple[int, ...]:
+        return self.language_model.get_eagle3_default_aux_hidden_state_layers()
+
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super(Glm4vForConditionalGeneration, self).__init__()
         config = vllm_config.model_config.hf_config
@@ -1102,11 +1273,12 @@ class Glm5NextForConditionalGeneration(
                 architectures=["Glm5NextForCausalLM"],
             )
 
-        self.set_moe_parameters()
-
-        # Glm5NextForCausalLM does not implement make_empty_intermediate_tensors,
-        # so pipeline parallelism is gated off (consistent with the text-only
-        # model) and we intentionally do not alias it here.
+        # PP: alias the text model's factory (same pattern as
+        # Glm4vForConditionalGeneration). The mHC residual streams are
+        # materialized at each stage boundary inside Glm5NextModel.forward.
+        self.make_empty_intermediate_tensors = (
+            self.language_model.make_empty_intermediate_tensors
+        )
 
     def set_moe_parameters(self) -> None:
         self.moe_mlp_layers = [
@@ -1174,6 +1346,14 @@ def _try_load_fp8_indexer_wk(name, tensor, buf, params_dict, loaded_params):
     if not is_weight and not is_scale:
         return False
     layer_prefix = name.rsplit(".wk.", 1)[0]
+    # PP: the layer lives on another rank — consume and skip.
+    if f"{layer_prefix}.wk_weights_proj.weight" not in params_dict:
+        logger.warning(
+            "fp8-load PP-skip (indexer wk): %s (params_dict=%d)",
+            name,
+            len(params_dict),
+        )
+        return True
     entry = buf.setdefault(layer_prefix, {})
     entry["weight" if is_weight else "scale"] = tensor
     if "weight" not in entry or "scale" not in entry:
@@ -1266,6 +1446,15 @@ def _try_load_fp8_attn_proj(
     layer_prefix = name.rsplit(suffix, 1)[0]
     target_w = f"{layer_prefix}.{target_base}.weight"
     target_s = f"{layer_prefix}.{target_base}.weight_scale_inv"
+    # PP: the layer lives on another rank — consume and skip.
+    if target_w not in params_dict and target_s not in params_dict:
+        logger.warning(
+            "fp8-load PP-skip (attn proj): %s -> %s (params_dict=%d)",
+            name,
+            target_base,
+            len(params_dict),
+        )
+        return True
     # If the model actually kept this projection in FP8, let the normal path
     # handle it (it has a weight_scale_inv param).
     if target_s in params_dict:
