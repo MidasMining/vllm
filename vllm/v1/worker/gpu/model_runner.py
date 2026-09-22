@@ -1736,6 +1736,29 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 )
 
         _STAGE.mark("entry")
+        # 170HX (cmp170hx-highva-ce-fault): deep chunked prefill on the
+        # heaviest PP rank grows allocator slack at runtime and later chunks
+        # reuse poisoned high-VA blocks (Xid 31 at ~200k-token prompts;
+        # follows the 13-layer rank across cards). Between-step release,
+        # gated off the hot path: only outside capture, only when slack
+        # exceeds 1GiB. Env VLLM_170HX_RUNTIME_SLACK_GUARD=0 disables.
+        if (
+            not dummy_run
+            and getattr(self, "_slack_guard_on", None) is None
+        ):
+            import os as _os
+            self._slack_guard_on = (
+                _os.environ.get("VLLM_170HX_RUNTIME_SLACK_GUARD", "1") == "1"
+            )
+        if (
+            not dummy_run
+            and self._slack_guard_on
+            and not torch.cuda.is_current_stream_capturing()
+        ):
+            _r = torch.cuda.memory_reserved()
+            _a = torch.cuda.memory_allocated()
+            if _r - _a > 2**30:
+                torch.cuda.empty_cache()
         # Get batch descriptor and sync across DP ranks.
         num_reqs = len(scheduler_output.num_scheduled_tokens)
         num_toks = scheduler_output.total_num_scheduled_tokens
