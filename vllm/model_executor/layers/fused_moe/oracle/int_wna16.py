@@ -538,6 +538,24 @@ def _pad_w13_bias(bias: torch.Tensor, n: int, padded_n: int) -> torch.Tensor:
     return bias.reshape(e, 2 * padded_n).contiguous()
 
 
+def _cmp170hx_release_slack(threshold_gib: float = 2.0) -> None:
+    """170HX (cmp170hx-highva-ce-fault): allocations made while multi-GiB
+    reserved-but-free slack exists reuse cached high-VA blocks that the
+    GPU faults on (Xid 31 REGION_VIOLATION). Call before each allocating
+    post-processing step during weight loading."""
+    if not torch.cuda.is_initialized():
+        return
+    r = torch.cuda.memory_reserved()
+    a = torch.cuda.memory_allocated()
+    if r - a > threshold_gib * 2**30:
+        print(
+            f"[REPACK_MEM] slack={(r - a)/2**30:.1f}GiB "
+            f"reserved={r/2**30:.1f} alloc={a/2**30:.1f} — empty_cache",
+            flush=True,
+        )
+        torch.cuda.empty_cache()
+
+
 def _process_weights_marlin(
     layer: torch.nn.Module,
     input_dtype: torch.dtype | None,
@@ -618,20 +636,7 @@ def _process_weights_marlin(
             w13_bias = _pad_w13_bias(w13_bias, N, padded_N)
 
     # --- Repack weights ---
-    # 170HX (cmp170hx-highva-ce-fault): repack allocates workspace while the
-    # originals are still alive; on these cards blocks reused from high-VA
-    # cached segments fault Xid 31 (GRAPHICS REGION_VIOLATION in the repack
-    # kernel). Release cached segments first whenever slack has built up.
-    if torch.cuda.is_initialized():
-        _r = torch.cuda.memory_reserved()
-        _a = torch.cuda.memory_allocated()
-        if _r - _a > 2 * 2**30:
-            print(
-                f"[REPACK_MEM] slack={(_r - _a)/2**30:.1f}GiB "
-                f"reserved={_r/2**30:.1f} alloc={_a/2**30:.1f} — empty_cache",
-                flush=True,
-            )
-            torch.cuda.empty_cache()
+    _cmp170hx_release_slack()
     marlin_w13_qweight = ops.gptq_marlin_moe_repack(
         marlin_w13_qweight,
         marlin_w13_qweight.shape[1] * pack_factor,
@@ -639,6 +644,7 @@ def _process_weights_marlin(
         num_bits,
         is_a_8bit=is_a_8bit,
     )
+    _cmp170hx_release_slack()
     marlin_w2_qweight = ops.gptq_marlin_moe_repack(
         marlin_w2_qweight,
         marlin_w2_qweight.shape[1] * pack_factor,
@@ -647,6 +653,7 @@ def _process_weights_marlin(
         is_a_8bit=is_a_8bit,
     )
 
+    _cmp170hx_release_slack()
     # --- Permute scales ---
     marlin_w13_scales = marlin_moe_permute_scales(
         s=marlin_w13_scales,
