@@ -193,6 +193,7 @@ if TYPE_CHECKING:
     VLLM_DEEPEPLL_NVFP4_DISPATCH: bool = False
     VLLM_V1_USE_OUTLINES_CACHE: bool = False
     VLLM_TPU_USING_PATHWAYS: bool = False
+    VLLM_TQ_KPE_FP8: bool = False
     VLLM_USE_DEEP_GEMM: bool = True
     VLLM_MOE_USE_DEEP_GEMM: bool = True
     VLLM_USE_DEEP_GEMM_E8M0: bool = True
@@ -1533,6 +1534,9 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_TPU_USING_PATHWAYS": lambda: bool(
         "proxy" in os.getenv("JAX_PLATFORMS", "").lower()
     ),
+    # TurboQuant MLA: store k_pe as fp8 (R bytes + 2B fp16 scale)
+    # instead of raw bf16 (2*R bytes). Default 0 (bf16 layout).
+    "VLLM_TQ_KPE_FP8": lambda: bool(int(os.getenv("VLLM_TQ_KPE_FP8", "0"))),
     # Allow use of DeepGemm kernels for fused moe ops.
     "VLLM_USE_DEEP_GEMM": lambda: bool(int(os.getenv("VLLM_USE_DEEP_GEMM", "1"))),
     # Allow use of DeepGemm specifically for MoE fused ops (overrides only MoE).

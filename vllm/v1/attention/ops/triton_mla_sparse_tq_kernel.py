@@ -142,9 +142,7 @@ def _sparse_tq_mla_compute_tile(
     vec_norm before the V dot — mathematically equivalent to scaling V.
     """
     offs_d = tl.arange(0, BLOCK_DMODEL)
-    offs_dpe = BLOCK_DMODEL + tl.arange(0, BLOCK_DPE)
     offs_dv = tl.arange(0, BLOCK_DV)
-    mask_dpe = offs_dpe < BLOCK_DMODEL + BLOCK_DPE
 
     if MSE_BITS == 0:  # k8v4
         k_scale = tl.load(k_scale_ptr).to(tl.float32)
@@ -159,14 +157,19 @@ def _sparse_tq_mla_compute_tile(
         mask=mask_h[:, None],
         other=0.0,
     )
-    qpe = tl.load(
-        q_buffer
-        + cur_q * stride_q_token
-        + cur_head[:, None] * stride_q_head
-        + offs_dpe[None, :],
-        mask=(mask_h[:, None]) & (mask_dpe[None, :]),
-        other=0.0,
-    )
+    # NoPE models (GLM-5.3-Flash: qk_rope_head_dim=0) have no PE lanes;
+    # BLOCK_DPE == 0 compiles the PE loads/dots out entirely.
+    if BLOCK_DPE > 0:
+        offs_dpe = BLOCK_DMODEL + tl.arange(0, BLOCK_DPE)
+        mask_dpe = offs_dpe < BLOCK_DMODEL + BLOCK_DPE
+        qpe = tl.load(
+            q_buffer
+            + cur_q * stride_q_token
+            + cur_head[:, None] * stride_q_head
+            + offs_dpe[None, :],
+            mask=(mask_h[:, None]) & (mask_dpe[None, :]),
+            other=0.0,
+        )
 
     NEG_LARGE = -1.0e30
     e_max = tl.zeros([BLOCK_H], dtype=tl.float32) + NEG_LARGE
@@ -325,56 +328,63 @@ def _sparse_tq_mla_compute_tile(
             qk = qk * vec_norm[None, :]
 
         # ----- k_pe (positional encoding) — bf16 or fp8 + scale -----
-        offs_kpe_byte_start = (
-            indices[None, :] * stride_cache_token
-            + cur_kv_head_id * stride_cache_head
-            + KPE_BYTES_OFFS
-        )
-        if not KPE_FP8:
-            offs_kpe_lo = offs_kpe_byte_start + (offs_dpe - BLOCK_DMODEL)[:, None] * 2
-            kpe_lo = tl.load(
-                cache_buffer + offs_kpe_lo,
-                mask=(mask_kv[None, :]) & (mask_dpe[:, None]),
-                other=0,
-            ).to(tl.uint16)
-            kpe_hi = tl.load(
-                cache_buffer + offs_kpe_lo + 1,
-                mask=(mask_kv[None, :]) & (mask_dpe[:, None]),
-                other=0,
-            ).to(tl.uint16)
-            kpe_u16 = (kpe_hi << 8) | kpe_lo
-            kpe = kpe_u16.to(tl.bfloat16, bitcast=True).to(q.dtype)
-        else:
-            offs_kpe_b = offs_kpe_byte_start + (offs_dpe - BLOCK_DMODEL)[:, None]
-            kpe_u8 = tl.load(
-                cache_buffer + offs_kpe_b,
-                mask=(mask_kv[None, :]) & (mask_dpe[:, None]),
-                other=0,
-            )
-            if FP8_E5M2:
-                kpe_fp8 = kpe_u8.to(tl.float8e5, bitcast=True)
-            else:
-                kpe_fp8 = kpe_u8.to(tl.float8e4nv, bitcast=True)
-            # Scale is one per-token fp16 at slot byte KPE_BYTES_OFFS+BLOCK_DPE.
-            # Compute the address as 1D (BLOCK_N,) so the loaded scale broadcasts
-            # cleanly against kpe_fp8 (BLOCK_DPE, BLOCK_N) at the multiply.
-            scale_addr = (
-                indices * stride_cache_token
+        # Compiled out entirely for NoPE models (BLOCK_DPE == 0).
+        if BLOCK_DPE > 0:
+            offs_kpe_byte_start = (
+                indices[None, :] * stride_cache_token
                 + cur_kv_head_id * stride_cache_head
                 + KPE_BYTES_OFFS
-                + BLOCK_DPE
             )
-            kpe_scale_lo = tl.load(
-                cache_buffer + scale_addr, mask=mask_kv, other=0,
-            ).to(tl.uint16)
-            kpe_scale_hi = tl.load(
-                cache_buffer + scale_addr + 1, mask=mask_kv, other=0,
-            ).to(tl.uint16)
-            kpe_scale_u16 = (kpe_scale_hi << 8) | kpe_scale_lo  # (BLOCK_N,)
-            kpe_scale = kpe_scale_u16.to(tl.float16, bitcast=True).to(tl.float32)
-            kpe = (kpe_fp8.to(tl.float32) * kpe_scale[None, :]).to(q.dtype)
+            if not KPE_FP8:
+                offs_kpe_lo = (
+                    offs_kpe_byte_start + (offs_dpe - BLOCK_DMODEL)[:, None] * 2
+                )
+                kpe_lo = tl.load(
+                    cache_buffer + offs_kpe_lo,
+                    mask=(mask_kv[None, :]) & (mask_dpe[:, None]),
+                    other=0,
+                ).to(tl.uint16)
+                kpe_hi = tl.load(
+                    cache_buffer + offs_kpe_lo + 1,
+                    mask=(mask_kv[None, :]) & (mask_dpe[:, None]),
+                    other=0,
+                ).to(tl.uint16)
+                kpe_u16 = (kpe_hi << 8) | kpe_lo
+                kpe = kpe_u16.to(tl.bfloat16, bitcast=True).to(q.dtype)
+            else:
+                offs_kpe_b = offs_kpe_byte_start + (offs_dpe - BLOCK_DMODEL)[:, None]
+                kpe_u8 = tl.load(
+                    cache_buffer + offs_kpe_b,
+                    mask=(mask_kv[None, :]) & (mask_dpe[:, None]),
+                    other=0,
+                )
+                if FP8_E5M2:
+                    kpe_fp8 = kpe_u8.to(tl.float8e5, bitcast=True)
+                else:
+                    kpe_fp8 = kpe_u8.to(tl.float8e4nv, bitcast=True)
+                # Scale is one per-token fp16 at slot byte KPE_BYTES_OFFS+BLOCK_DPE.
+                # Compute the address as 1D (BLOCK_N,) so the loaded scale
+                # broadcasts cleanly against kpe_fp8 (BLOCK_DPE, BLOCK_N) at
+                # the multiply.
+                scale_addr = (
+                    indices * stride_cache_token
+                    + cur_kv_head_id * stride_cache_head
+                    + KPE_BYTES_OFFS
+                    + BLOCK_DPE
+                )
+                kpe_scale_lo = tl.load(
+                    cache_buffer + scale_addr, mask=mask_kv, other=0,
+                ).to(tl.uint16)
+                kpe_scale_hi = tl.load(
+                    cache_buffer + scale_addr + 1, mask=mask_kv, other=0,
+                ).to(tl.uint16)
+                kpe_scale_u16 = (kpe_scale_hi << 8) | kpe_scale_lo  # (BLOCK_N,)
+                kpe_scale = kpe_scale_u16.to(tl.float16, bitcast=True).to(
+                    tl.float32
+                )
+                kpe = (kpe_fp8.to(tl.float32) * kpe_scale[None, :]).to(q.dtype)
 
-        qk += tl.dot(qpe, kpe)
+            qk += tl.dot(qpe, kpe)
         qk *= sm_scale
         qk = tl.where((mask_h[:, None]) & (mask_kv[None, :]), qk, NEG_LARGE)
 

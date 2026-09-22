@@ -1348,6 +1348,26 @@ class MLAAttention(nn.Module, AttentionLayerBase):
         kv_cache_dtype = kv_cache_dtype_str_to_dtype(
             self.kv_cache_dtype, vllm_config.model_config
         )
+        # ds_mla layouts pack NoPE + RoPE + scales into one opaque per-token
+        # blob, so the size is not derivable from head_size.
+        # See flashmla_sparse.py.
+        state_content_bytes = {"fp8_ds_mla": 656, "nvfp4_ds_mla": 352}.get(
+            self.kv_cache_dtype
+        )
+        if self.kv_cache_dtype.startswith("turboquant_"):
+            # TurboQuant MLA slots are packed uint8 bytes:
+            # [ kv_c_packed (preset-dependent) | k_pe (absent for NoPE) ].
+            from vllm.model_executor.layers.quantization.turboquant.config import (
+                TurboQuantConfig,
+            )
+
+            tq_cfg = TurboQuantConfig.from_cache_dtype(
+                self.kv_cache_dtype,
+                head_dim=self.kv_lora_rank,
+                rope_head_dim=self.qk_rope_head_dim,
+                k_pe_fp8=envs.VLLM_TQ_KPE_FP8,
+            )
+            state_content_bytes = tq_cfg.mla_packed_bytes
         common_kwargs = dict(
             block_size=vllm_config.cache_config.block_size,
             num_kv_heads=1,
@@ -1355,12 +1375,7 @@ class MLAAttention(nn.Module, AttentionLayerBase):
             dtype=kv_cache_dtype,
             cache_dtype_str=self.kv_cache_dtype,
             kv_quant_mode=get_kv_quant_mode(self.kv_cache_dtype),
-            # ds_mla layouts pack NoPE + RoPE + scales into one opaque per-token
-            # blob, so the size is not derivable from head_size.
-            # See flashmla_sparse.py.
-            state_content_bytes={"fp8_ds_mla": 656, "nvfp4_ds_mla": 352}.get(
-                self.kv_cache_dtype
-            ),
+            state_content_bytes=state_content_bytes,
         )
         if self.sliding_window is not None:
             return SlidingWindowMLASpec(

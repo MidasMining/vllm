@@ -147,6 +147,9 @@ def _get_backend_priorities(
             # SM8x fallback: every SM90+ sparse backend above rejects via
             # supports_compute_capability on Ampere; the Triton split-KV
             # sparse backend serves NoPE-512 there (glm53-flash-170hx port).
+            # The TurboQuant variant only matches turboquant_* kv-cache
+            # dtypes (supported_kv_cache_dtypes), so it is inert otherwise.
+            sparse_tail.append(AttentionBackendEnum.TRITON_MLA_SPARSE_TURBOQUANT)
             sparse_tail.append(AttentionBackendEnum.TRITON_MLA_SPARSE)
             return [
                 AttentionBackendEnum.FLASH_ATTN_MLA,

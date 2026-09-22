@@ -451,11 +451,14 @@ def triton_turboquant_store(
 def _tq_mla_fused_store_fp8_kernel(
     kv_c_ptr,  # [N, L] bf16/fp32
     k_pe_ptr,  # [N, R] bf16/fp32
-    kv_cache_ptr,  # [total_slots * packed_bytes] uint8
-    slot_mapping_ptr,  # [N] int64
+    kv_cache_ptr,  # [num_blocks, block_size, packed_bytes] uint8 (strided)
+    slot_mapping_ptr,  # [N] int64 — logical block*BLOCK_SIZE + offset
     k_scale_ptr,  # [1] fp32
+    stride_cache_block,  # bytes between consecutive blocks (arena-aware)
+    stride_cache_token,  # bytes between consecutive tokens in a block
     L: tl.constexpr,
     R: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
     PACKED_BYTES: tl.constexpr,
     K_PE_BYTES: tl.constexpr,
     K_PE_FP8: tl.constexpr,
@@ -465,6 +468,11 @@ def _tq_mla_fused_store_fp8_kernel(
     FP8_E5M2: tl.constexpr = 0,  # 1 = e5m2 (Ampere-native), 0 = e4nv (Hopper+)
 ):
     """MLA FP8 fused store: quantize kv_c to fp8 + handle k_pe + scatter.
+
+    Addressing matches concat_and_cache_mla: slot_mapping entries are
+    logical (block_id * BLOCK_SIZE + offset) and the physical placement
+    comes from the cache tensor's strides — required for the single-arena
+    layout where other layers' pages sit between this layer's blocks.
 
     FP8_E5M2 selects between fp8e5m2 (Ampere/Volta-native via Triton) and
     fp8e4nv (Hopper-native). Read kernel must use the matching type or
@@ -478,7 +486,9 @@ def _tq_mla_fused_store_fp8_kernel(
         return
 
     slot_i64 = slot.to(tl.int64)
-    cache_offset = slot_i64 * PACKED_BYTES
+    cache_offset = (slot_i64 // BLOCK_SIZE) * stride_cache_block + (
+        slot_i64 % BLOCK_SIZE
+    ) * stride_cache_token
 
     # Load k_scale (scalar)
     k_scale = tl.load(k_scale_ptr)
@@ -497,7 +507,9 @@ def _tq_mla_fused_store_fp8_kernel(
     kv_c_bytes = kv_c_fp8.to(tl.uint8, bitcast=True)
     tl.store(kv_cache_ptr + cache_offset + l_offs, kv_c_bytes, mask=l_mask)
 
-    # ── k_pe ──────────────────────────────────────────────────────
+    # ── k_pe (compiled out for NoPE models, R == 0) ───────────────
+    if R == 0:
+        return
     r_offs = tl.arange(0, BLOCK_R)
     r_mask = r_offs < R
     k_pe_vals = tl.load(k_pe_ptr + token_idx * R + r_offs, mask=r_mask, other=0.0)
@@ -547,10 +559,13 @@ def _tq_mla_fused_store_mse_kernel(
     Norms_ptr,  # [N] fp32 — key vector norms
     k_pe_ptr,  # [N, R] bf16/fp32
     Midpoints_ptr,  # [n_centroids-1] fp32
-    kv_cache_ptr,  # [total_slots * packed_bytes] uint8
-    slot_mapping_ptr,  # [N] int64
+    kv_cache_ptr,  # [num_blocks, block_size, packed_bytes] uint8 (strided)
+    slot_mapping_ptr,  # [N] int64 — logical block*BLOCK_SIZE + offset
+    stride_cache_block,  # bytes between consecutive blocks (arena-aware)
+    stride_cache_token,  # bytes between consecutive tokens in a block
     L: tl.constexpr,
     R: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
     PACKED_BYTES: tl.constexpr,
     MSE_BYTES: tl.constexpr,
     K_PE_BYTES: tl.constexpr,
@@ -564,6 +579,7 @@ def _tq_mla_fused_store_mse_kernel(
 ):
     """MLA MSE fused store: bucketize + pack + norm store + k_pe store.
 
+    Addressing matches concat_and_cache_mla (see the fp8 kernel above).
     FP8_E5M2 only affects the K_PE_FP8 branch; kv_c is always MSE-packed.
     """
     token_idx = tl.program_id(0)
@@ -572,7 +588,9 @@ def _tq_mla_fused_store_mse_kernel(
         return
 
     slot_i64 = slot.to(tl.int64)
-    cache_offset = slot_i64 * PACKED_BYTES
+    cache_offset = (slot_i64 // BLOCK_SIZE) * stride_cache_block + (
+        slot_i64 % BLOCK_SIZE
+    ) * stride_cache_token
 
     l_offs = tl.arange(0, BLOCK_L)
     l_mask = l_offs < L
@@ -625,7 +643,9 @@ def _tq_mla_fused_store_mse_kernel(
     tl.store(kv_cache_ptr + norm_offset, (vn_u16 & 0xFF).to(tl.uint8))
     tl.store(kv_cache_ptr + norm_offset + 1, ((vn_u16 >> 8) & 0xFF).to(tl.uint8))
 
-    # ── 4. k_pe ──────────────────────────────────────────────────
+    # ── 4. k_pe (compiled out for NoPE models, R == 0) ────────────
+    if R == 0:
+        return
     r_offs = tl.arange(0, BLOCK_R)
     r_mask = r_offs < R
     k_pe_vals = tl.load(k_pe_ptr + token_idx * R + r_offs, mask=r_mask, other=0.0)
@@ -692,19 +712,30 @@ def _mla_fused_store_fp8(
     L = kv_lora_rank
     R = qk_rope_head_dim
     BLOCK_L = triton.next_power_of_2(L)
-    BLOCK_R = triton.next_power_of_2(R)
+    BLOCK_R = triton.next_power_of_2(R) if R > 0 else 1
     k_pe_bytes = R + 2 if k_pe_fp8 else 2 * R
     packed_bytes = L + k_pe_bytes
+
+    if kv_cache.dim() == 4:  # [B, H=1, N, C] arena view
+        kv_cache = kv_cache.squeeze(1)
+    assert kv_cache.dim() == 3 and kv_cache.stride(2) == 1, (
+        f"paged TQ MLA cache expected [B, N, C] with contiguous rows; got "
+        f"shape {tuple(kv_cache.shape)} strides {kv_cache.stride()}"
+    )
+    assert kv_cache.shape[2] == packed_bytes
 
     grid = (N,)
     _tq_mla_fused_store_fp8_kernel[grid](
         kv_c,
         k_pe,
-        kv_cache.view(-1),
+        kv_cache,
         slot_mapping.to(torch.int64),
         k_scale,
+        stride_cache_block=kv_cache.stride(0),
+        stride_cache_token=kv_cache.stride(1),
         L=L,
         R=R,
+        BLOCK_SIZE=kv_cache.shape[1],
         PACKED_BYTES=packed_bytes,
         K_PE_BYTES=k_pe_bytes,
         K_PE_FP8=k_pe_fp8,
@@ -743,7 +774,7 @@ def _mla_fused_store_mse(
     L = kv_lora_rank
     R = qk_rope_head_dim
     BLOCK_L = triton.next_power_of_2(L)
-    BLOCK_R = triton.next_power_of_2(R)
+    BLOCK_R = triton.next_power_of_2(R) if R > 0 else 1
     mse_bytes = math.ceil(L * mse_bits / 8)
     n_centroids = 2**mse_bits
     k_pe_bytes = R + 2 if k_pe_fp8 else 2 * R
@@ -755,16 +786,27 @@ def _mla_fused_store_mse(
     x_hat = kv_c_f / (norms.unsqueeze(1) + 1e-8)
     y = x_hat @ PiT  # (N, L) — rotated
 
+    if kv_cache.dim() == 4:  # [B, H=1, N, C] arena view
+        kv_cache = kv_cache.squeeze(1)
+    assert kv_cache.dim() == 3 and kv_cache.stride(2) == 1, (
+        f"paged TQ MLA cache expected [B, N, C] with contiguous rows; got "
+        f"shape {tuple(kv_cache.shape)} strides {kv_cache.stride()}"
+    )
+    assert kv_cache.shape[2] == packed_bytes
+
     grid = (N,)
     _tq_mla_fused_store_mse_kernel[grid](
         y,
         norms,
         k_pe,
         midpoints,
-        kv_cache.view(-1),
+        kv_cache,
         slot_mapping.to(torch.int64),
+        stride_cache_block=kv_cache.stride(0),
+        stride_cache_token=kv_cache.stride(1),
         L=L,
         R=R,
+        BLOCK_SIZE=kv_cache.shape[1],
         PACKED_BYTES=packed_bytes,
         MSE_BYTES=mse_bytes,
         K_PE_BYTES=k_pe_bytes,

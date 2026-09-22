@@ -67,6 +67,10 @@ class AttentionBackendEnum(Enum, metaclass=_AttentionBackendEnumMeta):
     TRITON_MLA_SPARSE = (
         "vllm.v1.attention.backends.mla.triton_mla_sparse.TritonMLASparseBackend"
     )
+    TRITON_MLA_SPARSE_TURBOQUANT = (
+        "vllm.v1.attention.backends.mla.triton_mla_sparse_tq."
+        "TritonMLASparseTurboQuantBackend"
+    )
     TORCH_SDPA = ""  # this tag is only used for ViT
     FLASHINFER = "vllm.v1.attention.backends.flashinfer.FlashInferBackend"
     TRITON_FLASHINFER = (
