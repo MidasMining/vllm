@@ -1857,6 +1857,16 @@ def get_kv_cache_config_from_groups(
             for g in sidecar_groups
             for layer_name in g.layer_names
         ]
+        # The glm5n layout is complete: heterogeneous per-tensor page sizes by
+        # construction, so skip the generic uniform-layout validation below.
+        return KVCacheConfig(
+            num_blocks=num_blocks,
+            kv_cache_tensors=kv_cache_tensors,
+            kv_cache_groups=kv_cache_groups,
+            prefix_cache_retention_interval=(
+                vllm_config.cache_config.prefix_cache_retention_interval
+            ),
+        )
     layout = vllm_config.cache_config.get_resolved_kv_cache_layout()
     validate_kv_cache_layout(layout, kv_cache_groups)
     bytes_per_block = _get_kv_cache_bytes_per_block(kv_cache_groups)
