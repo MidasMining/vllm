@@ -915,7 +915,14 @@ class SparseAttnIndexerKpool(CustomOp):
         self.topk_indices_buffer = topk_indices_buffer
         self.skip_k_cache_insert = skip_k_cache_insert
         self.use_fp4_cache = use_fp4_cache
-        if current_platform.is_cuda() and not has_deep_gemm():
+        if (
+            current_platform.is_cuda()
+            and not has_deep_gemm()
+            and current_platform.has_device_capability(90)
+        ):
+            # SM90+ has no Triton fallback wired for the fast paths; below
+            # SM90 (and on SM12x) the Triton MQA-logits kernels take over,
+            # so a missing DeepGEMM is expected there.
             raise RuntimeError(
                 "Sparse Attention Indexer CUDA op requires DeepGEMM to be installed."
             )
