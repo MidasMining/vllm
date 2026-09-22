@@ -872,7 +872,32 @@ class Glm5NextModel(nn.Module, EagleModelMixin):
 
         _pending_wk_fp8: dict = {}
 
+        # 170HX (cmp170hx-highva-ce-fault): periodic slack release during the
+        # weight stream — multi-GiB reserved-but-free slack poisons later
+        # allocations with high-VA cached blocks (Xid 31 REGION_VIOLATION);
+        # v0.30's load path bypasses the routed_experts watchdog, and heavy
+        # ranks (>=14 layers) cross the threshold mid-load.
+        _slack_check_i = 0
+
+        def _maybe_release_slack() -> None:
+            nonlocal _slack_check_i
+            _slack_check_i += 1
+            if _slack_check_i % 64:
+                return
+            if not torch.cuda.is_initialized():
+                return
+            r = torch.cuda.memory_reserved()
+            a = torch.cuda.memory_allocated()
+            if r - a > 2 * 2**30:
+                print(
+                    f"[LOAD_MEM] slack={(r - a)/2**30:.1f}GiB "
+                    f"reserved={r/2**30:.1f} alloc={a/2**30:.1f} — empty_cache",
+                    flush=True,
+                )
+                torch.cuda.empty_cache()
+
         for args in weights:
+            _maybe_release_slack()
             name, loaded_weight = args[:2]
             kwargs: dict = args[2] if len(args) > 2 else {}
             if "rotary_emb.inv_freq" in name:
