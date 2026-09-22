@@ -1429,27 +1429,16 @@ def _glm5_next_tensor_layout(
     # time — _get_kv_cache_groups_glm5_next is not on this path. Rebuild the
     # sidecar groups with corrected specs so the accounting, the config
     # emission, and the runner all see the true page cost.
-    _target = int(
-        os.environ.get(GLM5N_SIDECAR_BLOCK_SIZE_ENV)
-        or GLM5N_SIDECAR_BLOCK_SIZE_DEFAULT
-    )
-    _reblocked = []
+    _stripped = []
     for g in sidecar_groups:
         spec = g.kv_cache_spec
-        # Force the draft block size to the target in BOTH directions: the
-        # v0.30 unifier may have already raised it to the core ratio (4096,
-        # 18.9MB/layer/id), which makes every shared-pool block id cost ~94MB
-        # on the draft rank and starves the pool (measured: 89 blocks).
-        # 487 design point: block 256 ≈ 1.2MB/layer/id.
-        if (
-            _target > 0
-            and isinstance(spec, AttentionSpec)
-            and spec.block_size != _target
-        ):
-            spec = replace(spec, block_size=_target, page_size_padded=None)
+        # Padding to the core page is unnecessary here: sidecars own their
+        # regions in this layout. Strip so accounting and views use true bytes.
+        if isinstance(spec, AttentionSpec) and spec.page_size_padded is not None:
+            spec = replace(spec, page_size_padded=None)
             g = KVCacheGroupSpec(g.layer_names, spec)
-        _reblocked.append(g)
-    sidecar_groups = _reblocked
+        _stripped.append(g)
+    sidecar_groups = _stripped
     if any(
         isinstance(g.kv_cache_spec, (UniformTypeKVCacheSpecs, MambaSpec))
         for g in sidecar_groups

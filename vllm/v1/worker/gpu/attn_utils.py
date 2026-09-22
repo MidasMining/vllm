@@ -141,6 +141,28 @@ def get_kv_cache_spec(vllm_config: VllmConfig) -> dict[str, KVCacheSpec]:
                 spec = attn_module.get_attn_backend().customize_spec(spec)
             kv_cache_spec[layer_name] = spec
     resolve_hisparse_block_size(vllm_config, kv_cache_spec, attn_layers)
+    # glm5n + DFlash: re-block the draft's sidecar specs at the source so the
+    # backend, the page unifier, and the KV layout all agree (block 16 costs
+    # ~2.4k shared-pool ids per request; the unifier's ratio-upscale to 4096
+    # costs ~19MB/layer per id and starves the pool — see
+    # kv_cache_utils._reblock_glm5n_sidecar_specs).
+    spec_cfg = vllm_config.speculative_config
+    if (
+        spec_cfg is not None
+        and spec_cfg.method == "dflash"
+        and any(type(sp).__name__ == "MLAAttentionSpec" for sp in kv_cache_spec.values())
+    ):
+        from vllm.v1.core.kv_cache_utils import _reblock_glm5n_sidecar_specs
+        from vllm.v1.kv_cache_interface import MLAAttentionSpec, MambaSpec
+
+        sidecar = {
+            n: sp
+            for n, sp in kv_cache_spec.items()
+            if isinstance(sp, AttentionSpec)
+            and not isinstance(sp, (MLAAttentionSpec, MambaSpec))
+        }
+        for n, sp in _reblock_glm5n_sidecar_specs(sidecar).items():
+            kv_cache_spec[n] = sp
     return kv_cache_spec
 
 
