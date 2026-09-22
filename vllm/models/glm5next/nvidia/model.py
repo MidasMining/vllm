@@ -60,6 +60,7 @@ from vllm.model_executor.models.glm4_1v import (
     Glm4vForConditionalGeneration,
 )
 from vllm.model_executor.models.interfaces import (
+    EagleModelMixin,
     HasInnerState,
     IsHybrid,
     MixtureOfExperts,
@@ -620,7 +621,8 @@ class Glm5NextDecoderLayer(nn.Module):
         )
 
 
-class Glm5NextModel(nn.Module):
+class Glm5NextModel(nn.Module, EagleModelMixin):
+    supports_aux_hidden_states_over_pp = True
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
 
@@ -699,22 +701,9 @@ class Glm5NextModel(nn.Module):
         # hop carries the materialized residual streams [T, n, H] (the
         # sending stage folds its deferred hc_post in before the send — see
         # forward); without mHC it is the plain [T, H] hidden states.
-        # DFlash/EAGLE3 aux hidden-state taps: vllm layer-id semantics, id k
-        # means "after decoder layer k-1" (HF hidden_states[k]). Empty tuple =
-        # disabled; the runner sets this via set_aux_hidden_state_layers().
-        self.aux_hidden_state_layers: tuple[int, ...] = ()
-        # Last-rank output staging for aux states. The forward's aux tensors
-        # are views over piecewise-cudagraph output buffers; under async
-        # scheduling the NEXT step's forward reuses those buffers before the
-        # drafter consumes them, clobbering every other step's aux (drafts
-        # alternate good/garbage, halving acceptance). Copy into persistent
-        # buffers INSIDE the forward -- the same trick DeepSeek-V4 uses for
-        # its MTP hidden buffer. Allocated lazily on the last rank at first
-        # aux-enabled forward (before any graph capture; warmup runs first).
-        self._aux_out_buffers: list[torch.Tensor] | None = None
-        self._max_num_batched_tokens = (
-            vllm_config.scheduler_config.max_num_batched_tokens
-        )
+        # DFlash/EAGLE3 aux taps: EagleModelMixin protocol (aux_hidden_state_layers,
+        # slot layout, pack/collect helpers); the runner reserves relay slots via
+        # reserve_aux_intermediate_tensor_slots.
 
         if getattr(config, "mhc", False):
             n_streams = config.mhc_num_residual_streams
@@ -730,13 +719,6 @@ class Glm5NextModel(nn.Module):
                         device=device,
                     )
                 }
-                # Aux taps are spread across PP stages; ship every slot on
-                # every hop (fixed key set so the send/recv dicts always
-                # match), earlier stages leave later slots zeroed.
-                for k in range(len(self.aux_hidden_state_layers)):
-                    tensors[f"aux_hidden_{k}"] = torch.zeros(
-                        (batch_size, hidden_size), dtype=dtype, device=device
-                    )
                 return IntermediateTensors(tensors)
 
             self.make_empty_intermediate_tensors = _make_empty_intermediate_tensors
@@ -783,16 +765,13 @@ class Glm5NextModel(nn.Module):
         if self.is_sequence_parallel:
             hidden_states = sp_shard(hidden_states)
 
-        # DFlash/EAGLE3 aux taps: slot k holds the materialized single-stream
-        # hidden state after layer aux_ids[k]-1 (HF hidden_states semantics;
-        # streams contracted by mean over the mHC dim, matching DeepSeek-V4's
-        # DSpark collection and the DFlash2 drafter's fc input width). Slots
-        # for taps on earlier stages arrive via IntermediateTensors.
+        # DFlash/EAGLE3 aux taps (EagleModelMixin): tap k is the materialized
+        # single-stream hidden state after layer id-1 (HF semantics; mHC
+        # streams contracted by mean, matching the DFlash2 drafter's fc input
+        # width). Upstream ranks' taps arrive via IntermediateTensors.
         aux_ids = self.aux_hidden_state_layers
-        aux_slots: list[torch.Tensor | None] = [None] * len(aux_ids)
-        if aux_ids and intermediate_tensors is not None:
-            for k in range(len(aux_ids)):
-                aux_slots[k] = intermediate_tensors[f"aux_hidden_{k}"]
+        remote_aux = self.collect_remote_aux_hidden_states(intermediate_tensors)
+        aux_hidden_states: list[torch.Tensor] = []
 
         for idx, layer in enumerate(self._active_layers, start=self.start_layer):
             hidden_states, residual, post, comb = layer(
@@ -800,40 +779,17 @@ class Glm5NextModel(nn.Module):
             )
             if aux_ids and (idx + 1) in aux_ids:
                 if post is not None:
+                    # hc_post materializes into a fresh allocation.
                     aux = layer.hc_post(hidden_states, residual, post, comb)
                 else:
-                    aux = hidden_states
-                import os as _os
-                _dump = _os.environ.get("VLLM_DUMP_AUX_DIR")
-                if _dump and not getattr(self, "_dump_gate_dbg", False):
-                    self._dump_gate_dbg = True
-                    print(
-                        f"[AUXDUMP_GATE dump={_dump} dim={aux.dim()} "
-                        f"capturing={torch.cuda.is_current_stream_capturing()} "
-                        f"arm={_os.path.exists(f'{_dump}/ARM')} idx={idx}]",
-                        flush=True,
-                    )
-                if (
-                    _dump
-                    and aux.dim() == 3
-                    and not torch.cuda.is_current_stream_capturing()
-                    and _os.path.exists(f"{_dump}/ARM")
-                ):
-                    _n = getattr(self, "_aux_dump_n", 0)
-                    if _n < 40:
-                        try:
-                            self._aux_dump_n = _n + 1
-                            torch.save(
-                                aux.detach().to(torch.float32).cpu(),
-                                f"{_dump}/streams_L{idx}_{_n:03d}.pt",
-                            )
-                        except Exception:
-                            pass
+                    # hidden_states is a view over piecewise-cudagraph output
+                    # buffers; clone so later steps cannot clobber the tap.
+                    aux = hidden_states.clone()
                 if aux.dim() == 3:
                     aux = aux.mean(dim=1)
                 if self.is_sequence_parallel:
                     aux = sp_all_gather(aux)[:full_num_tokens]
-                aux_slots[aux_ids.index(idx + 1)] = aux
+                aux_hidden_states.append(aux)
 
         if not get_pp_group().is_last_rank:
             if post is not None:
@@ -846,48 +802,20 @@ class Glm5NextModel(nn.Module):
                 hidden_states = last_layer.hc_post(
                     hidden_states, residual, post, comb
                 )
-            out = {"hidden_states": hidden_states}
-            for k, aux in enumerate(aux_slots):
-                if aux is None:
-                    aux = hidden_states.new_zeros(
-                        (hidden_states.shape[0], hidden_states.shape[-1])
-                    )
-                else:
-                    # Locally collected aux is a view over piecewise-cudagraph
-                    # output buffers; under async scheduling the next forward
-                    # clobbers it before the NCCL hop completes (every other
-                    # step's aux turned to garbage downstream). The main
-                    # hidden_states hop is safe only because hc_post
-                    # materialization happens to allocate fresh; mirror that.
-                    # This runs outside captured regions, so the allocation is
-                    # harmless.
-                    aux = aux.clone()
-                out[f"aux_hidden_{k}"] = aux
-            return IntermediateTensors(out)
+            return IntermediateTensors(
+                {
+                    "hidden_states": hidden_states,
+                    **self.pack_local_aux_hidden_states(aux_hidden_states),
+                }
+            )
 
         if self.is_sequence_parallel:
             hidden_states = sp_all_gather(hidden_states)[:full_num_tokens]
 
         hidden_states = self.norm(hidden_states)
-        if aux_ids:
-            assert all(a is not None for a in aux_slots)
-            if self._aux_out_buffers is None:
-                self._aux_out_buffers = [
-                    torch.zeros(
-                        (self._max_num_batched_tokens, hidden_states.shape[-1]),
-                        dtype=hidden_states.dtype,
-                        device=hidden_states.device,
-                    )
-                    for _ in range(len(aux_ids))
-                ]
-            staged: list[torch.Tensor] = []
-            for k, aux in enumerate(aux_slots):
-                assert aux is not None
-                buf = self._aux_out_buffers[k]
-                n = aux.shape[0]
-                buf[:n].copy_(aux)
-                staged.append(buf[:n])
-            return hidden_states, staged
+        aux_hidden_states = remote_aux + aux_hidden_states
+        if aux_hidden_states:
+            return hidden_states, aux_hidden_states
         return hidden_states
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
@@ -1113,7 +1041,7 @@ class Glm5NextForCausalLM(
     has_own_embed_tokens: bool = False
 
     def set_aux_hidden_state_layers(self, layers: tuple[int, ...]) -> None:
-        self.model.aux_hidden_state_layers = tuple(layers)
+        self.model._set_aux_hidden_state_layers(layers)
 
     def get_eagle3_default_aux_hidden_state_layers(self) -> tuple[int, ...]:
         num_layers = self.config.num_hidden_layers
