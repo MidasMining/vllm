@@ -41,6 +41,11 @@ class TritonMLASparseMetadataBuilder(XPUMLASparseMetadataBuilder):
 
 
 class TritonMLASparseImpl(XPUMLASparseImpl):
+    def record_logical_topk_ready(self) -> None:
+        # v0.30 index-group bookkeeping hook (no-op without an index group);
+        # the Triton SM8x impl consumes its topk buffer in-line.
+        pass
+
     """Triton sparse-MLA impl with split-KV decode (3-7× faster than the
     single-pass XPU base for single-query decode on SM80 / SM121)."""
 
