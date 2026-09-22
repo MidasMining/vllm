@@ -505,7 +505,28 @@ class RoutedExperts(PluggableLayer):
             hidden_dim=hidden_dim,
             shard_dim=shard_dim,
         )
-        expert_data.copy_(loaded_weight)
+        # 170HX: stage CPU sources on-device before strided expert copies and
+        # dump geometry on failure (Xid 31 CE-fault forensics; see
+        # cmp170hx-highva-ce-fault).
+        if (
+            loaded_weight.device.type == "cpu"
+            and expert_data.device.type == "cuda"
+            and not expert_data.is_contiguous()
+        ):
+            loaded_weight = loaded_weight.to(expert_data.device)
+        try:
+            expert_data.copy_(loaded_weight)
+        except Exception:
+            print(
+                f"[LOAD_W13_FAULT] dst shape={tuple(expert_data.shape)} "
+                f"dtype={expert_data.dtype} dev={expert_data.device} "
+                f"stride={expert_data.stride()} contig={expert_data.is_contiguous()} | "
+                f"src shape={tuple(loaded_weight.shape)} dev={loaded_weight.device} | "
+                f"cuda_alloc={torch.cuda.memory_allocated()/2**30:.2f}GiB "
+                f"reserved={torch.cuda.memory_reserved()/2**30:.2f}GiB",
+                flush=True,
+            )
+            raise
 
     def _load_w2(
         self,
@@ -826,13 +847,36 @@ class RoutedExperts(PluggableLayer):
 
         # Case model weights
         if "weight" in weight_name:
-            self._load_model_weight_or_group_weight_scale(
-                shard_id=shard_id,
-                shard_dim=shard_dim,
-                loaded_weight=loaded_weight,
-                expert_data=expert_data,
-                tp_rank=self.moe_config.tp_rank,
-            )
+            # 170HX CE-fault guard: a large load transient (e.g. an unquantized
+            # MTP block) leaves multi-GiB reserved-but-free segments at high
+            # VAs; CE writes into blocks reused from them fault Xid 31. Release
+            # the cached segments before reuse, and log where slack ballooned.
+            if torch.cuda.is_initialized():
+                _r = torch.cuda.memory_reserved()
+                _a = torch.cuda.memory_allocated()
+                if _r - _a > 8 * 2**30:
+                    print(
+                        f"[LOAD_MEM] slack={(_r - _a)/2**30:.1f}GiB "
+                        f"reserved={_r/2**30:.1f} alloc={_a/2**30:.1f} "
+                        f"at {weight_name} expert={expert_id}",
+                        flush=True,
+                    )
+                    torch.cuda.empty_cache()
+            try:
+                self._load_model_weight_or_group_weight_scale(
+                    shard_id=shard_id,
+                    shard_dim=shard_dim,
+                    loaded_weight=loaded_weight,
+                    expert_data=expert_data,
+                    tp_rank=self.moe_config.tp_rank,
+                )
+            except Exception:
+                print(
+                    f"[LOAD_FAULT_NAME] weight_name={weight_name} "
+                    f"shard_id={shard_id} expert_id={expert_id}",
+                    flush=True,
+                )
+                raise
             return True if return_success else None
 
         return False if return_success else None

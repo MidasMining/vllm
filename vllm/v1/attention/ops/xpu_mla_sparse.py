@@ -95,6 +95,10 @@ def _bf16_mla_sparse_kernel(
         )
 
         mask_kv = (indices >= 0) & (indices < seq_kv)
+        # int64 offsets: with >2^31 element offsets (large KV caches), int32
+        # `indices * stride` overflows and faults (Xid 31) even though the
+        # index VALUES pass the mask above.
+        indices = indices.to(tl.int64)
         mask_kv_d = mask_dmodel
         offs_k = (
             indices[None, :] * stride_k_token
