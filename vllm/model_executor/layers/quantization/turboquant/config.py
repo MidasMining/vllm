@@ -244,7 +244,7 @@ def _get_full_attention_layer_indices(model_config: ModelConfig) -> list[int]:
     layer_types = getattr(text_cfg, "layer_types", None)
     if layer_types is not None:
         return [
-            i for i, t in enumerate(layer_types) if t in ("full_attention", "attention")
+            i for i, t in enumerate(layer_types) if t in ("full_attention", "attention", "deepseek_sparse_attention")
         ]
 
     layers_block_type = getattr(text_cfg, "layers_block_type", None)
