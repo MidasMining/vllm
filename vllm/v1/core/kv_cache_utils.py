@@ -1413,6 +1413,22 @@ def _glm5_next_tensor_layout(
     sidecar_groups = [
         g for g in kv_cache_groups if id(g) not in core_ids and g.layer_names
     ]
+    # In the v0.30 flow the groups arrive from the generic builders, so the
+    # sidecar re-block (and padding strip) must happen here at classification
+    # time — _get_kv_cache_groups_glm5_next is not on this path. Rebuild the
+    # sidecar groups with corrected specs so the accounting, the config
+    # emission, and the runner all see the true page cost.
+    _reblocked = []
+    for g in sidecar_groups:
+        specs = _reblock_glm5n_sidecar_specs(
+            {n: g.kv_cache_spec for n in g.layer_names}
+        )
+        new_spec = next(iter(specs.values()))
+        _reblocked.append(
+            g if new_spec is g.kv_cache_spec
+            else KVCacheGroupSpec(g.layer_names, new_spec)
+        )
+    sidecar_groups = _reblocked
     if any(
         isinstance(g.kv_cache_spec, (UniformTypeKVCacheSpecs, MambaSpec))
         for g in sidecar_groups
