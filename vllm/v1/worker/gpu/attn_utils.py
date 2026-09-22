@@ -151,9 +151,14 @@ def get_kv_cache_spec(vllm_config: VllmConfig) -> dict[str, KVCacheSpec]:
     # kv_cache_utils._reblock_glm5n_sidecar_specs).
     spec_cfg = vllm_config.speculative_config
     logger.info(
-        "spec-assembly: method=%s spec_types=%s",
+        "spec-assembly: method=%s spec_types=%s non_mla_layers=%s",
         getattr(spec_cfg, "method", None),
         sorted({type(sp).__name__ for sp in kv_cache_spec.values()}),
+        [
+            (n, type(sp).__name__, sp.block_size, sp.page_size_bytes)
+            for n, sp in kv_cache_spec.items()
+            if type(sp).__name__ not in ("MLAAttentionSpec", "MambaSpec")
+        ][:8],
     )
     if (
         spec_cfg is not None
@@ -171,7 +176,13 @@ def get_kv_cache_spec(vllm_config: VllmConfig) -> dict[str, KVCacheSpec]:
             for n, sp in kv_cache_spec.items()
             if type(sp).__name__ in ("SlidingWindowSpec", "FullAttentionSpec")
         }
-        for n, sp in _reblock_glm5n_sidecar_specs(sidecar).items():
+        _re = _reblock_glm5n_sidecar_specs(sidecar)
+        _n_changed = sum(1 for n in _re if _re[n] is not sidecar[n])
+        logger.info(
+            "spec-assembly: sidecar candidates=%d reblocked=%d",
+            len(sidecar), _n_changed,
+        )
+        for n, sp in _re.items():
             kv_cache_spec[n] = sp
     return kv_cache_spec
 
