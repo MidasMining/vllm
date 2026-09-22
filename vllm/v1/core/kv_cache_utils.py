@@ -1226,14 +1226,16 @@ def _reblock_glm5n_sidecar_specs(
     out: dict[str, KVCacheSpec] = {}
     changed: list[tuple[str, int, int]] = []
     for name, spec in sidecar_specs.items():
-        if (
-            not isinstance(spec, AttentionSpec)
-            or spec.page_size_padded is not None
-            or spec.block_size >= block_size
-        ):
+        if not isinstance(spec, AttentionSpec) or spec.block_size >= block_size:
             out[name] = spec
             continue
-        out[name] = replace(spec, block_size=block_size)
+        # v0.30's uniform-page unifier may have padded this spec to a
+        # block-ratio multiple of the core page before our path runs (observed:
+        # draft page padded to exactly 4x the MLA page, 18.9MB/layer vs the
+        # ~1MB/layer the reblocked sidecar actually needs). The glm5n layout
+        # gives sidecars their own regions, so the padding is unnecessary —
+        # strip it and re-block.
+        out[name] = replace(spec, block_size=block_size, page_size_padded=None)
         changed.append((name, spec.block_size, block_size))
     if changed:
         logger.info_once(
