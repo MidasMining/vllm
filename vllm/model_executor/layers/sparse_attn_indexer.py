@@ -1248,3 +1248,77 @@ class SparseAttnIndexer(CustomOp):
                 )
 
         return topk_indices_buffer
+
+
+# SM8x/SM12x prefill top-k torch fallback (ported from the 487ecf187 tree;
+# used by sparse_attn_indexer_kpool).
+def _prefill_topk_needs_torch_fallback() -> bool:
+    """SM12x per PR #49897; SM8x added here (see _top_k_per_row_prefill_torch).
+
+    Set VLLM_DSV4_PREFILL_TOPK_TORCH=0 to force the CUDA kernel back on, or =1
+    to force the fallback on any architecture.
+    """
+    import os
+
+    forced = os.environ.get("VLLM_DSV4_PREFILL_TOPK_TORCH")
+    if forced is not None:
+        return forced == "1"
+    if not current_platform.is_cuda():
+        return False
+    return current_platform.is_device_capability_family(
+        120
+    ) or current_platform.has_device_capability(80) and not (
+        current_platform.has_device_capability(90)
+    )
+
+
+def _top_k_per_row_prefill_torch(
+    logits: torch.Tensor,
+    cu_seqlen_ks: torch.Tensor,
+    cu_seqlen_ke: torch.Tensor,
+    topk_indices: torch.Tensor,
+    topk_tokens: int,
+) -> None:
+    """torch.topk fallback with ``top_k_per_row_prefill``'s output contract.
+
+    Ported from vllm-project/vllm PR #49897, which added this for SM12x. The
+    CUDA kernel's histogram path (taken by rows with more than ``topk_tokens``
+    candidates) can leave part of its dynamic-shared-memory output
+    uninitialized and copy it out as indices; downstream,
+    ``compute_global_topk_indices_and_lens`` treats any index ``>= 0`` as valid
+    and dereferences it into the KV block table, crashing with a CUDA illegal
+    memory access.
+
+    Enabled here for SM8x as well: on 4x CMP 170HX this reproduces as an
+    ``Xid 31 MMU Fault ... ACCESS_TYPE_VIRT_WRITE`` that kills a worker on
+    prefills above roughly 128k tokens, while 123k passes.
+
+    Select the top ``topk_tokens`` positions of ``logits[i, ks_i:ke_i)`` per
+    row, emit them relative to ``ks_i`` in ascending position order, and pad
+    rows with fewer candidates with ``-1`` (the kernel's short-row contract).
+    """
+    num_cols = logits.shape[1]
+    ks = cu_seqlen_ks.to(torch.long)[:, None]
+    cols = torch.arange(num_cols, device=logits.device)[None, :]
+    valid = (cols >= ks) & (cols < cu_seqlen_ke.to(torch.long)[:, None])
+    # logits is a per-chunk scratch buffer that is dead after top-k; mask it
+    # in place rather than materializing a masked copy.
+    logits.masked_fill_(~valid, float("-inf"))
+    k = min(topk_tokens, num_cols)
+    top_values, top_cols = logits.topk(k, dim=-1)
+    relative = (top_cols - ks).to(torch.int32)
+    # Downstream sparse-attention kernels iterate the selected KV positions in
+    # ascending order; emit position-sorted indices with the ``-1`` pads at the
+    # tail (torch.topk returns score order instead). Non-finite scores (rows
+    # shorter than ``topk_tokens``, or NaN logits) pad.
+    pad_sentinel = torch.iinfo(torch.int32).max
+    relative = torch.where(
+        top_values.isfinite(), relative, relative.new_full((), pad_sentinel)
+    )
+    relative, _ = relative.sort(dim=-1)
+    relative = torch.where(
+        relative == pad_sentinel, relative.new_full((), -1), relative
+    )
+    topk_indices[:, :k] = relative
+    if k < topk_tokens:
+        topk_indices[:, k:] = -1
