@@ -618,6 +618,20 @@ def _process_weights_marlin(
             w13_bias = _pad_w13_bias(w13_bias, N, padded_N)
 
     # --- Repack weights ---
+    # 170HX (cmp170hx-highva-ce-fault): repack allocates workspace while the
+    # originals are still alive; on these cards blocks reused from high-VA
+    # cached segments fault Xid 31 (GRAPHICS REGION_VIOLATION in the repack
+    # kernel). Release cached segments first whenever slack has built up.
+    if torch.cuda.is_initialized():
+        _r = torch.cuda.memory_reserved()
+        _a = torch.cuda.memory_allocated()
+        if _r - _a > 2 * 2**30:
+            print(
+                f"[REPACK_MEM] slack={(_r - _a)/2**30:.1f}GiB "
+                f"reserved={_r/2**30:.1f} alloc={_a/2**30:.1f} — empty_cache",
+                flush=True,
+            )
+            torch.cuda.empty_cache()
     marlin_w13_qweight = ops.gptq_marlin_moe_repack(
         marlin_w13_qweight,
         marlin_w13_qweight.shape[1] * pack_factor,
