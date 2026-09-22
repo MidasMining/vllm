@@ -1091,7 +1091,7 @@ def get_max_concurrency_for_kv_cache_config(
             host_blocks_per_request += required
         else:
             num_blocks_per_request += required
-    logger.info_once(
+    logger.info(
         "capacity inputs: num_blocks=%d blocks_per_request=%d groups=%s",
         kv_cache_config.num_blocks, num_blocks_per_request,
         [
@@ -1429,16 +1429,26 @@ def _glm5_next_tensor_layout(
     # time — _get_kv_cache_groups_glm5_next is not on this path. Rebuild the
     # sidecar groups with corrected specs so the accounting, the config
     # emission, and the runner all see the true page cost.
+    _target = int(
+        os.environ.get(GLM5N_SIDECAR_BLOCK_SIZE_ENV)
+        or GLM5N_SIDECAR_BLOCK_SIZE_DEFAULT
+    )
     _reblocked = []
     for g in sidecar_groups:
-        specs = _reblock_glm5n_sidecar_specs(
-            {n: g.kv_cache_spec for n in g.layer_names}
-        )
-        new_spec = next(iter(specs.values()))
-        _reblocked.append(
-            g if new_spec is g.kv_cache_spec
-            else KVCacheGroupSpec(g.layer_names, new_spec)
-        )
+        spec = g.kv_cache_spec
+        # Force the draft block size to the target in BOTH directions: the
+        # v0.30 unifier may have already raised it to the core ratio (4096,
+        # 18.9MB/layer/id), which makes every shared-pool block id cost ~94MB
+        # on the draft rank and starves the pool (measured: 89 blocks).
+        # 487 design point: block 256 ≈ 1.2MB/layer/id.
+        if (
+            _target > 0
+            and isinstance(spec, AttentionSpec)
+            and spec.block_size != _target
+        ):
+            spec = replace(spec, block_size=_target, page_size_padded=None)
+            g = KVCacheGroupSpec(g.layer_names, spec)
+        _reblocked.append(g)
     sidecar_groups = _reblocked
     if any(
         isinstance(g.kv_cache_spec, (UniformTypeKVCacheSpecs, MambaSpec))
