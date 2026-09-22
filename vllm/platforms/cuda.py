@@ -144,6 +144,10 @@ def _get_backend_priorities(
                 sparse_tail.insert(0, flashinfer_sparse)
             else:
                 sparse_tail.append(flashinfer_sparse)
+            # SM8x fallback: every SM90+ sparse backend above rejects via
+            # supports_compute_capability on Ampere; the Triton split-KV
+            # sparse backend serves NoPE-512 there (glm53-flash-170hx port).
+            sparse_tail.append(AttentionBackendEnum.TRITON_MLA_SPARSE)
             return [
                 AttentionBackendEnum.FLASH_ATTN_MLA,
                 AttentionBackendEnum.FLASHMLA,
