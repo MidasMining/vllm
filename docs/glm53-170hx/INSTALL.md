@@ -18,7 +18,7 @@ until it passes. Everything here was recorded from the working rig on
 | Python | 3.12.3 (system), venv made by `uv` 0.12.0 |
 | vLLM | v0.30.0 + branch `glm53-pp4-v0300` (reports as `0.30.1.dev1+g3d2c1a121.cu133`) |
 | Key wheels | torch 2.13.0+cu132, triton 3.7.1, flashinfer-python 0.6.18.post1, transformers 5.17.0, compressed-tensors 0.17.0 |
-| Model | GLM-5.3-Flash AWQ W4A16 (compressed-tensors), 178 GB, HF revision `abd7b07719111f137e1de8a0c1b7e01c11b74d1a` |
+| Model | `wtdcode/GLM-5.3-Flash-AWQ-W4A16`, 178 GB, HF revision `abd7b07719111f137e1de8a0c1b7e01c11b74d1a` |
 | Drafter | `incoai/GLM-5.3-Flash-DFlash2`, 2.2 GB |
 
 ## 1. Operating system and kernel pin
@@ -148,18 +148,17 @@ About 181 GB total. Put both in one directory; the launcher defaults to
 
 ```bash
 M=/mnt/ssd/models
-.venv/bin/hf download <AWQ-repo-id> --revision abd7b07719111f137e1de8a0c1b7e01c11b74d1a \
+.venv/bin/hf download wtdcode/GLM-5.3-Flash-AWQ-W4A16 --revision abd7b07719111f137e1de8a0c1b7e01c11b74d1a \
   --local-dir $M/GLM-5.3-Flash-AWQ-W4A16 --max-workers 4
 .venv/bin/hf download incoai/GLM-5.3-Flash-DFlash2 --local-dir $M/GLM-5.3-Flash-DFlash2
 ```
 
-**GAP:** the Hugging Face repo ID of the AWQ checkpoint wasn't recorded on
-the rig, only its revision above. The checkpoint's model card says it is
+The checkpoint is [wtdcode/GLM-5.3-Flash-AWQ-W4A16](https://huggingface.co/wtdcode/GLM-5.3-Flash-AWQ-W4A16):
 AWQ W4A16 (group 128, compressed-tensors `pack-quantized`) of
 `zai-org/GLM-5.3-Flash`, calibrated from the official FP8 release, with
-attention, shared experts, dense MLPs and the MTP layer kept in BF16. Use
-the same repo and revision to reproduce the numbers exactly; a different
-quantization changes memory fit and quality.
+attention, shared experts, dense MLPs and the MTP layer kept in BF16. The
+`--revision` pins the exact snapshot we measured; a different quantization
+changes memory fit and quality.
 
 The DFlash2 drafter is licensed CC BY-NC-ND 4.0 (non-commercial).
 
