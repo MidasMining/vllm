@@ -395,3 +395,40 @@ def test_zeroes_exactly_one_block_per_layer(layout: KVCacheLayout):
             assert (view[b].view(torch.int8) == 1).all(), layout
     zero_bytes = int((raw == 0).sum().item())
     assert zero_bytes == num_layers * spec.page_size_bytes, layout
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_core_zeroing_preserves_private_drafter_cache():
+    """The same ID may be newly allocated in core and still live in drafter."""
+    from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheGroupSpec
+
+    device = torch.device("cuda")
+    core = torch.ones((4, 8), dtype=torch.int32, device=device)
+    draft = torch.full((7, 8), 37, dtype=torch.int32, device=device)
+    spec = FullAttentionSpec(
+        block_size=1, num_kv_heads=1, head_size=1, dtype=torch.float32
+    )
+    config = KVCacheConfig(
+        num_blocks=4,
+        kv_cache_tensors=[],
+        kv_cache_groups=[
+            KVCacheGroupSpec(["core"], spec),
+            KVCacheGroupSpec(["draft"], spec, private_num_blocks=7),
+        ],
+    )
+    zeroer = KVBlockZeroer(
+        device,
+        attn_groups_iter=[AttentionGroup(None, ["core", "draft"], spec, 0)],
+        kernel_block_sizes=[1],
+        num_blocks=config.num_blocks,
+        runner_only_attn_layers=config.private_pool_layer_names,
+        static_forward_context={
+            "core": SimpleNamespace(kv_cache=core),
+            "draft": SimpleNamespace(kv_cache=draft),
+        },
+    )
+    zeroer.zero_block_ids([1, 3])
+    torch.accelerator.synchronize()
+    assert torch.all(core[[1, 3]] == 0)
+    assert torch.all(core[[0, 2]] == 1)
+    assert torch.all(draft == 37)

@@ -1169,7 +1169,10 @@ class GPUModelRunner(
             self.device,
             attn_groups_iter=self._kv_cache_spec_attn_group_iterator(),
             kernel_block_sizes=self._kernel_block_sizes,
-            runner_only_attn_layers=self.runner_only_attn_layers,
+            runner_only_attn_layers=(
+                self.runner_only_attn_layers
+                | self.kv_cache_config.private_pool_layer_names
+            ),
             static_forward_context=self.compilation_config.static_forward_context,
             num_blocks=self.kv_cache_config.num_blocks,
         )

@@ -807,6 +807,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         self.kv_block_zeroer = KVBlockZeroer(
             self.device,
             attn_groups_iter=(g for groups in self.attn_groups for g in groups),
+            runner_only_attn_layers=self.kv_cache_config.private_pool_layer_names,
             kernel_block_sizes=self.kernel_block_sizes,
             static_forward_context=self.compilation_config.static_forward_context,
             num_blocks=self.kv_cache_config.num_blocks,

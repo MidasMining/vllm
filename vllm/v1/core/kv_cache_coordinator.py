@@ -133,12 +133,23 @@ class KVCacheCoordinator(ABC):
                 f" (={num_prefill_lookahead})."
             )
 
+        self.private_pools = {
+            i: BlockPool(
+                num_gpu_blocks=group.private_num_blocks,
+                enable_caching=False,
+                hash_block_size=hash_block_size,
+            )
+            for i, group in enumerate(kv_cache_config.kv_cache_groups)
+            if group.private_num_blocks is not None
+        }
+        if self.private_pools and enable_caching:
+            raise ValueError("Private drafter pools require prefix caching off")
         self.single_type_managers = tuple(
             get_manager_for_kv_cache_spec(
                 kv_cache_spec=kv_cache_group.kv_cache_spec,
                 max_in_flight_tokens=max_in_flight_tokens,
                 max_model_len=max_model_len,
-                block_pool=self.block_pool,
+                block_pool=self.private_pools.get(i, self.block_pool),
                 role=kv_cache_group.role,
                 enable_caching=enable_caching,
                 kv_cache_group_id=i,
@@ -147,7 +158,10 @@ class KVCacheCoordinator(ABC):
                 ),
                 pcp_world_size=pcp_world_size,
                 scheduler_block_size=self.scheduler_block_size,
-                needs_kv_cache_zeroing=self.kv_cache_config.needs_kv_cache_zeroing,
+                needs_kv_cache_zeroing=(
+                    self.kv_cache_config.needs_kv_cache_zeroing
+                    and i not in self.private_pools
+                ),
             )
             for i, kv_cache_group in enumerate(self.kv_cache_config.kv_cache_groups)
         )
@@ -206,6 +220,21 @@ class KVCacheCoordinator(ABC):
         """
         num_blocks_to_allocate = 0
         for i, manager in enumerate(self.single_type_managers):
+            if i in self.private_pools:
+                required = manager.get_num_blocks_to_allocate(
+                    request_id,
+                    num_tokens,
+                    new_computed_blocks[i],
+                    total_computed_tokens,
+                    num_local_computed_tokens,
+                    num_tokens_main_model,
+                    apply_admission_cap=apply_admission_cap,
+                )
+                if required > manager.block_pool.get_num_free_blocks():
+                    # Preserve the admission API: an impossible core demand
+                    # makes the caller defer/preempt before either pool changes.
+                    return self.block_pool.num_gpu_blocks + 1
+                continue
             if isinstance(manager, CrossAttentionManager):
                 # For cross-attention, we issue a single static allocation
                 # of blocks based on the number of encoder input tokens.

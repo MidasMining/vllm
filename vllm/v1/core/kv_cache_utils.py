@@ -38,6 +38,7 @@ from vllm.v1.kv_cache_interface import (
     KVCacheLayout,
     KVCacheSpec,
     KVCacheTensor,
+    KVQuantMode,
     MambaSpec,
     MLAAttentionSpec,
     SlidingWindowMLASpec,
@@ -1078,16 +1079,20 @@ def get_max_concurrency_for_kv_cache_config(
     a representative per-layer spec (scheduler config), so both capacity
     call sites agree.
 
-    Host groups use a separate pool; the smaller concurrency limit applies.
+    Host and private drafter groups use separate pools; the smallest
+    concurrency limit applies. Empty PP placeholders retain global demand.
     """
     num_blocks_per_request = 0
     host_blocks_per_request = 0
+    private_limits = []
     for group in kv_cache_config.kv_cache_groups:
         required = cdiv(
             group.kv_cache_spec.max_memory_usage_bytes(vllm_config),
             group.kv_cache_spec.page_size_bytes,
         )
-        if group.host_resident:
+        if group.private_num_blocks is not None:
+            private_limits.append((group.private_num_blocks - 1) / required)
+        elif group.host_resident:
             host_blocks_per_request += required
         else:
             num_blocks_per_request += required
@@ -1102,7 +1107,7 @@ def get_max_concurrency_for_kv_cache_config(
             for g in kv_cache_config.kv_cache_groups
         ],
     )
-    limits = [kv_cache_config.num_blocks / num_blocks_per_request]
+    limits = [kv_cache_config.num_blocks / num_blocks_per_request, *private_limits]
     if host_blocks_per_request:
         assert kv_cache_config.hisparse_host_num_blocks is not None
         limits.append(
@@ -1119,6 +1124,51 @@ def may_override_num_blocks(vllm_config: VllmConfig, num_blocks: int) -> int:
     if vllm_config.cache_config.num_gpu_blocks_override is not None:
         num_blocks = vllm_config.cache_config.num_gpu_blocks_override
     return num_blocks
+
+
+def _private_pool_bytes(groups: list[KVCacheGroupSpec]) -> int:
+    return sum(
+        g.private_num_blocks * g.kv_cache_spec.page_size_bytes * len(g.layer_names)
+        for g in groups
+        if g.private_num_blocks is not None
+    )
+
+
+def _configure_glm5n_private_pools(
+    vllm_config: VllmConfig, groups: list[KVCacheGroupSpec]
+) -> None:
+    # Private sidecars are unquantized: core block zeroing must not touch them.
+    # Keep caching and transfer on the existing shared-pool path.
+    spec_config = vllm_config.speculative_config
+    if (
+        spec_config is None
+        or spec_config.method != "dflash"
+        or vllm_config.cache_config.enable_prefix_caching
+        or vllm_config.kv_transfer_config is not None
+    ):
+        return
+    layout = _glm5_next_tensor_layout(groups)
+    if layout is None:
+        return
+    sidecar_names = {name for g in layout[-1] for name in g.layer_names}
+    for group in groups:
+        spec = group.kv_cache_spec
+        if (
+            not isinstance(spec, SlidingWindowSpec)
+            or spec.kv_quant_mode != KVQuantMode.NONE
+            or not set(group.layer_names) <= sidecar_names
+        ):
+            continue
+        required = cdiv(spec.max_memory_usage_bytes(vllm_config), spec.page_size_bytes)
+        group.private_num_blocks = (
+            1 + vllm_config.scheduler_config.max_num_seqs * required
+        )
+        logger.info(
+            "glm5n private drafter pool: layers=%s blocks=%d blocks_per_request=%d",
+            group.layer_names,
+            group.private_num_blocks,
+            required,
+        )
 
 
 def _pool_bytes_per_block(kv_cache_groups: list[KVCacheGroupSpec]) -> int:
@@ -1436,7 +1486,7 @@ def _glm5_next_tensor_layout(
         # regions in this layout. Strip so accounting and views use true bytes.
         if isinstance(spec, AttentionSpec) and spec.page_size_padded is not None:
             spec = replace(spec, page_size_padded=None)
-            g = KVCacheGroupSpec(g.layer_names, spec)
+            g = replace(g, kv_cache_spec=spec)
         _stripped.append(g)
     sidecar_groups = _stripped
     if any(
@@ -1730,7 +1780,9 @@ def _get_kv_cache_bytes_per_block(
         # slot (the tail rides inside the indexer page via slot-sharing).
         _, _, mla_names, idx_names, mla_page, idx_page, _, _, sidecar = glm5
         sidecar_per_block = sum(
-            g.kv_cache_spec.page_size_bytes * len(g.layer_names) for g in sidecar
+            g.kv_cache_spec.page_size_bytes * len(g.layer_names)
+            for g in sidecar
+            if g.private_num_blocks is None
         )
         return (
             len(mla_names) * mla_page
@@ -1851,30 +1903,35 @@ def get_kv_cache_config_from_groups(
             )
         sidecar_per_block = sum(
             g.kv_cache_spec.page_size_bytes * len(g.layer_names)
-            for g in sidecar_groups
+            for g in sidecar_groups if g.private_num_blocks is None
         )
         per_block = (
             len(mla_names) * mla_page
             + len(idx_names) * idx_page
             + sidecar_per_block
         )
-        num_blocks = available_memory // per_block
+        reserved = _private_pool_bytes(kv_cache_groups)
+        num_blocks = (available_memory - reserved) // per_block
         num_blocks = may_override_num_blocks(vllm_config, num_blocks)
+        if num_blocks <= 0:
+            raise ValueError("Insufficient memory for core and private drafter pools")
         # v0.30 worker contract: one backing arena; every tensor carries the
         # arena size and places its region by offset. Aliasing (slot-sharing
         # co-owners) is expressed as separate per-layer tensors with the SAME
         # offset — overlapping ranges alias, per the KVCacheTensor contract.
         # Regions back to back: [mla_0..mla_n | idx_0..idx_n | sidecar...].
-        arena = per_block * num_blocks
+        arena = per_block * num_blocks + reserved
 
-        def _region_tensors(names, page, off):
+        def _region_tensors(names, page, off, private_num_blocks=None):
+            region_blocks = private_num_blocks or num_blocks
             return [
                 KVCacheTensor(
                     size=arena,
                     layers=[name],
-                    layer_stride=page * num_blocks,
+                    layer_stride=page * region_blocks,
                     block_stride=page,
                     offset=off,
+                    num_blocks=private_num_blocks,
                 )
                 for name in names
             ]
@@ -1899,9 +1956,14 @@ def get_kv_cache_config_from_groups(
         for g in sidecar_groups:
             for layer_name in g.layer_names:
                 kv_cache_tensors += _region_tensors(
-                    [layer_name], g.kv_cache_spec.page_size_bytes, _off
+                    [layer_name],
+                    g.kv_cache_spec.page_size_bytes,
+                    _off,
+                    g.private_num_blocks,
                 )
-                _off += g.kv_cache_spec.page_size_bytes * num_blocks
+                _off += g.kv_cache_spec.page_size_bytes * (
+                    g.private_num_blocks or num_blocks
+                )
         assert _off == arena, (_off, arena)
         logger.info(
             "glm5n config: num_blocks=%d per_block=%d (mla %d*%d idx %d*%d "
@@ -2632,7 +2694,7 @@ def _max_memory_usage_bytes_from_groups(
             # PP projection can leave a sidecar group empty on ranks that
             # hold none of its layers; an empty group allocates no tensors
             # and must not add block demand.
-            if not group.layer_names:
+            if not group.layer_names or group.private_num_blocks is not None:
                 continue
             spec = group.kv_cache_spec
             blocks_needed += cdiv(
@@ -2640,7 +2702,7 @@ def _max_memory_usage_bytes_from_groups(
             )
         sidecar_per_block = sum(
             g.kv_cache_spec.page_size_bytes * len(g.layer_names)
-            for g in sidecar_groups
+            for g in sidecar_groups if g.private_num_blocks is None
         )
         logger.info(
             "glm5n max-mem accounting: blocks_needed=%d (core=%d) per_block="
@@ -2652,7 +2714,7 @@ def _max_memory_usage_bytes_from_groups(
             [(g.layer_names[:1], g.kv_cache_spec.max_memory_usage_bytes(vllm_config),
               g.kv_cache_spec.page_size_bytes) for g in sidecar_groups],
         )
-        return blocks_needed * (
+        return _private_pool_bytes(kv_cache_groups) + blocks_needed * (
             len(mla_names) * mla_page
             + len(idx_names) * idx_page
             + sidecar_per_block
@@ -2816,9 +2878,10 @@ def _project_kv_cache_groups_to_worker(
                 },
             )
         projected_groups.append(
-            KVCacheGroupSpec(
-                worker_layer_names,
-                group_spec,
+            replace(
+                group,
+                layer_names=worker_layer_names,
+                kv_cache_spec=group_spec,
                 is_eagle_group=group.is_eagle_group and bool(worker_layer_names),
             )
         )
@@ -2896,6 +2959,7 @@ def get_kv_cache_configs(
     # hybrid models when disable_hybrid_kv_cache_manager is enabled.
     # After this call, merged_kv_cache_specs may be modified in-place.
     global_kv_cache_groups = get_kv_cache_groups(vllm_config, merged_kv_cache_specs)
+    _configure_glm5n_private_pools(vllm_config, global_kv_cache_groups)
 
     # If original_max_model_len was -1, automatically
     # determine the maximum model length that fits in available GPU memory.
@@ -2924,7 +2988,9 @@ def get_kv_cache_configs(
                 avail_mem // bytes_per_block,
                 override,
             )
-            adjusted_memory.append(override * bytes_per_block)
+            adjusted_memory.append(
+                override * bytes_per_block + _private_pool_bytes(groups)
+            )
         available_memory = adjusted_memory
 
     if vllm_config.attention_config.hisparse_config is not None:
@@ -2978,7 +3044,10 @@ def get_kv_cache_configs(
         # strides and offsets stay consistent with the shrunken allocation.
         groups = kv_cache_config.kv_cache_groups
         kv_cache_configs[i] = get_kv_cache_config_from_groups(
-            vllm_config, groups, min_num_blocks * _pool_bytes_per_block(groups)
+            vllm_config,
+            groups,
+            min_num_blocks * _pool_bytes_per_block(groups)
+            + _private_pool_bytes(groups),
         )
 
     return kv_cache_configs

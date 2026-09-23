@@ -1386,6 +1386,8 @@ class KVCacheTensor:
     block_stride: int
     offset: int = 0  # byte offset of layers[0]'s block 0
     host_resident: bool = False
+    num_blocks: int | None = None
+    # Independent device pool capacity; storage remains in the shared arena.
 
 
 class KVCacheGroupRole(str, Enum):
@@ -1414,6 +1416,8 @@ class KVCacheGroupSpec:
     # source group after a connector load.
     enable_kv_transfer: bool = True
     role: KVCacheGroupRole = KVCacheGroupRole.DEFAULT
+    private_num_blocks: int | None = None
+    # A group-local device block-ID pool, including its reserved null block.
 
 
 @dataclass
@@ -1510,10 +1514,21 @@ class KVCacheConfig:
 
     def num_blocks_of(self, tensor: KVCacheTensor) -> int:
         """Number of blocks addressable by the pool backing ``tensor``."""
+        if tensor.num_blocks is not None:
+            return tensor.num_blocks
         if not tensor.host_resident:
             return self.num_blocks
         assert self.hisparse_host_num_blocks is not None
         return self.hisparse_host_num_blocks
+
+    @property
+    def private_pool_layer_names(self) -> set[str]:
+        return {
+            name
+            for group in self.kv_cache_groups
+            if group.private_num_blocks is not None
+            for name in group.layer_names
+        }
 
     @property
     def has_mamba_layers(self) -> bool:

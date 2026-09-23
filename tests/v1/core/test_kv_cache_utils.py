@@ -4250,3 +4250,182 @@ def test_deepseek_v4_annotation_requires_model_type():
     )
 
     assert not any(g.is_eagle_group for g in groups)
+
+
+def _private_drafter_fixture():
+    """CPU-only two-rank layout with a bounded drafter on the second rank."""
+    config = SimpleNamespace(
+        model_config=SimpleNamespace(max_model_len=8192),
+        parallel_config=SimpleNamespace(decode_context_parallel_size=1),
+        scheduler_config=SimpleNamespace(max_num_seqs=8),
+        cache_config=SimpleNamespace(
+            enable_prefix_caching=False,
+            mamba_cache_mode="none",
+            num_gpu_blocks_override=None,
+            prefix_cache_retention_interval=None,
+        ),
+        attention_config=SimpleNamespace(hisparse_config=None),
+        speculative_config=SimpleNamespace(method="dflash"),
+        kv_transfer_config=None,
+        max_in_flight_tokens=512,
+    )
+    mla = MLAAttentionSpec(
+        block_size=1024, num_kv_heads=1, head_size=576, dtype=torch.bfloat16
+    )
+    idx = MLAAttentionSpec(
+        block_size=1024,
+        num_kv_heads=1,
+        head_size=132,
+        dtype=torch.uint8,
+        tokens_per_state=4,
+    )
+    inner = {"rank0.mla": mla, "rank0.idx": idx, "rank1.mla": mla, "rank1.idx": idx}
+    mamba = MambaSpec(
+        block_size=1024,
+        shapes=((16, 16),),
+        dtypes=(torch.bfloat16,),
+        page_size_padded=mla.page_size_bytes,
+    )
+    draft = SlidingWindowSpec(
+        block_size=256,
+        num_kv_heads=8,
+        head_size=128,
+        dtype=torch.bfloat16,
+        sliding_window=1024,
+    )
+    groups = [
+        KVCacheGroupSpec(
+            list(inner), UniformTypeKVCacheSpecs(block_size=1024, kv_cache_specs=inner)
+        ),
+        KVCacheGroupSpec(["rank0.mamba", "rank1.mamba"], mamba),
+        KVCacheGroupSpec(["draft"], draft),
+    ]
+    return config, groups
+
+
+@pytest.mark.parametrize("prefix_caching", [False, True])
+def test_glm5_private_drafter_projection_and_arena(prefix_caching):
+    """PP placeholders retain pool identity; private storage survives shrink."""
+    config, groups = _private_drafter_fixture()
+    config.cache_config.enable_prefix_caching = prefix_caching
+    kv_cache_utils._configure_glm5n_private_pools(config, groups)
+    draft = groups[-1]
+    required = (
+        draft.kv_cache_spec.max_memory_usage_bytes(config)
+        // draft.kv_cache_spec.page_size_bytes
+    )
+    assert draft.private_num_blocks == (None if prefix_caching else 1 + 8 * required)
+    configs = []
+    for rank in (0, 1):
+        names = {f"rank{rank}.mla", f"rank{rank}.idx", f"rank{rank}.mamba"}
+        if rank == 1:
+            names.add("draft")
+        projected = kv_cache_utils._project_kv_cache_groups_to_worker(
+            groups, dict.fromkeys(names)
+        )
+        assert projected[-1].private_num_blocks == draft.private_num_blocks
+        core_bytes = kv_cache_utils._pool_bytes_per_block(projected)
+        reserved = kv_cache_utils._private_pool_bytes(projected)
+        for count in (100, 60):
+            cfg = kv_cache_utils.get_kv_cache_config_from_groups(
+                config, projected, core_bytes * count + reserved
+            )
+            assert cfg.num_blocks == count
+            assert {t.size for t in cfg.kv_cache_tensors} == {
+                core_bytes * count + reserved
+            }
+            tensors = _tensor_by_layer(cfg)
+            assert (
+                tensors[f"rank{rank}.mamba"].offset == tensors[f"rank{rank}.mla"].offset
+            )
+            for name, tensor in tensors.items():
+                nblocks = cfg.num_blocks_of(tensor)
+                assert tensor.offset + tensor.block_stride * nblocks <= tensor.size
+                if name == "draft":
+                    assert nblocks == (draft.private_num_blocks or count)
+                    assert (
+                        tensor.offset >= core_bytes * count
+                        if not prefix_caching
+                        else True
+                    )
+        configs.append(cfg)
+    if not prefix_caching:
+        scheduler = generate_scheduler_kv_cache_config(configs)
+        assert scheduler.kv_cache_groups[-1].layer_names == []
+        assert (
+            scheduler.kv_cache_groups[-1].private_num_blocks == draft.private_num_blocks
+        )
+        # The empty PP0 group still limits global concurrency via its private pool.
+        assert get_max_concurrency_for_kv_cache_config(config, scheduler) == min(
+            60 / 9, 8
+        )
+
+
+def test_private_drafter_admission_recycling_and_free():
+    """Drafter pressure defers allocation without consuming/aliasing core IDs."""
+    full = FullAttentionSpec(
+        block_size=16, num_kv_heads=1, head_size=8, dtype=torch.bfloat16
+    )
+    draft = SlidingWindowSpec(
+        block_size=16,
+        num_kv_heads=1,
+        head_size=8,
+        dtype=torch.bfloat16,
+        sliding_window=32,
+    )
+    cfg = KVCacheConfig(
+        num_blocks=100,
+        kv_cache_tensors=[],
+        kv_cache_groups=[
+            KVCacheGroupSpec(["target"], full),
+            KVCacheGroupSpec(["draft"], draft, private_num_blocks=6),
+        ],
+    )
+    manager = KVCacheManager(
+        cfg,
+        max_model_len=256,
+        scheduler_block_size=16,
+        hash_block_size=16,
+        max_in_flight_tokens=32,
+        enable_caching=False,
+    )
+    a = make_request("private-a", [1] * 128)
+    b = make_request("private-b", [2] * 128)
+    assert manager.allocate_slots(a, 32) is not None
+    assert manager.allocate_slots(b, 32) is not None
+    core, sidecar = manager.coordinator.single_type_managers
+    assert core.block_pool is not sidecar.block_pool
+    assert core.block_pool.get_num_free_blocks() == 95
+    assert sidecar.block_pool.get_num_free_blocks() == 1
+    c = make_request("private-c", [3] * 128)
+    assert manager.allocate_slots(c, 32) is None
+    assert core.block_pool.get_num_free_blocks() == 95
+    manager.free(b)
+    for computed in (32, 64, 96):
+        a.num_computed_tokens = computed
+        assert manager.allocate_slots(a, 32) is not None
+        assert sidecar.block_pool.get_num_free_blocks() >= 1
+    manager.free(a)
+    assert core.block_pool.get_num_free_blocks() == 99
+    assert sidecar.block_pool.get_num_free_blocks() == 5
+
+
+
+def test_glm5_profiling_override_with_zero_budget():
+    """Worker profiling builds an eight-block dummy arena before memory sizing."""
+    config, groups = _private_drafter_fixture()
+    config.cache_config.num_gpu_blocks_override = 8
+    cache = kv_cache_utils.get_kv_cache_config_from_groups(config, groups, 0)
+    assert cache.num_blocks == 8
+    assert all(t.size > 0 for t in cache.kv_cache_tensors)
+
+
+
+def test_glm5_quantized_drafter_keeps_shared_pool():
+    """Private sidecars bypass core zeroing, so quantized drafts must opt out."""
+    config, groups = _private_drafter_fixture()
+    groups[-1].kv_cache_spec = replace(
+        groups[-1].kv_cache_spec, kv_quant_mode=KVQuantMode.FP8_PER_TENSOR
+    )
+    kv_cache_utils._configure_glm5n_private_pools(config, groups)
+    assert groups[-1].private_num_blocks is None

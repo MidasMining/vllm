@@ -375,3 +375,22 @@ def test_num_lookahead_tokens_without_speculation():
     config = _Config()
 
     assert config.num_lookahead_tokens == 0
+
+
+def test_warmup_uses_independent_drafter_ids():
+    """Core IDs must not consume the drafter's smaller warmup pool."""
+    core = _attention_group()
+    draft = _attention_group()
+    draft.layer_names = ["draft"]
+    draft.private_num_blocks = 16
+    runner = _make_runner([core, draft], NUM_SPEC_STEPS)
+    seen = []
+
+    def execute(output):
+        for request in output.scheduled_new_reqs:
+            seen.append(request.block_ids)
+            assert max(request.block_ids[1], default=0) < draft.private_num_blocks
+
+    warmup_kernels(runner, execute, lambda *args, **kwargs: None)
+    assert seen
+    assert seen[0][0][0] == seen[0][1][0] == 1
