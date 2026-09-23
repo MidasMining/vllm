@@ -1,0 +1,67 @@
+{
+  "timestamp": "2026-09-22T22:30:31.817957",
+  "model": "glm53-flash",
+  "api_url": "http://localhost:8002/v1",
+  "total_score": 21,
+  "total_max": 21,
+  "elapsed_seconds": 494.3173522949219,
+  "tests": {
+    "zmq": {
+      "score": 2,
+      "max_score": 1,
+      "passed": true,
+      "checks": {
+        "socket_thread_issue": true,
+        "context_thread_safety": true
+      }
+    },
+    "pplns": {
+      "score": 3,
+      "max_score": 3,
+      "passed": true,
+      "checks": {
+        "hardcoded_share_window": true,
+        "window_size_unused": true,
+        "config_key_mismatch": true
+      }
+    },
+    "expert": {
+      "score": 4,
+      "max_score": 4,
+      "passed": true,
+      "checks": {
+        "race_condition": true,
+        "sql_injection": true,
+        "float_precision": true,
+        "atomicity": true
+      }
+    },
+    "nightmare": {
+      "score": 4,
+      "max_score": 5,
+      "passed": false,
+      "checks": {
+        "byte_order": true,
+        "info_leak": true,
+        "race_stale": true,
+        "memory_leak": false,
+        "input_validation": true
+      }
+    },
+    "hiveos": {
+      "score": 8,
+      "max_score": 8,
+      "passed": true,
+      "checks": {
+        "uses_heredocs": true,
+        "h_manifest_custom_name": true,
+        "uses_custom_vars": true,
+        "creates_h_config": true,
+        "creates_h_run_exec": true,
+        "creates_h_stats_json": true,
+        "directory_structure": true,
+        "api_port_configured": true
+      }
+    }
+  }
+}

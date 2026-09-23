@@ -1,0 +1,277 @@
+<title>GLM-5.3-Flash on Four CMP 170HX</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --ground:#F2F4F2; --panel:#FFFFFF; --ink:#16201D; --muted:#56635E; --rule:#D5DCD8;
+  --accent:#1F6F52; --accent-soft:#DCEDE5; --warn:#9A5B12; --warn-soft:#F6EBDA;
+  --bar-a:#1F6F52; --bar-b:#A9B6B0; --code-bg:#1A2320; --code-ink:#DCE8E2;
+  --display:"Barlow Condensed","Arial Narrow",system-ui,sans-serif;
+  --body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --ground:#0F1513; --panel:#162019; --ink:#DDE7E2; --muted:#98A8A1; --rule:#2A3631;
+    --accent:#5CC79A; --accent-soft:#1C3329; --warn:#E0A95A; --warn-soft:#352817;
+    --bar-a:#5CC79A; --bar-b:#4A5A53; --code-bg:#0A0F0D; --code-ink:#D6E4DD;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --ground:#0F1513; --panel:#162019; --ink:#DDE7E2; --muted:#98A8A1; --rule:#2A3631;
+  --accent:#5CC79A; --accent-soft:#1C3329; --warn:#E0A95A; --warn-soft:#352817;
+  --bar-a:#5CC79A; --bar-b:#4A5A53; --code-bg:#0A0F0D; --code-ink:#D6E4DD;
+}
+*{box-sizing:border-box}
+body{background:var(--ground);color:var(--ink);font:15px/1.6 var(--body);padding-inline:16px;padding-block:28px 64px}
+.wrap{max-width:900px;margin:0 auto;display:flex;flex-direction:column;gap:44px}
+h1,h2,h3{font-family:var(--display);text-wrap:balance;margin:0;line-height:1.1}
+h1{font-size:clamp(34px,6vw,54px);font-weight:700;letter-spacing:.2px}
+h2{font-size:28px;font-weight:600;padding-bottom:8px;border-bottom:2px solid var(--ink)}
+h3{font-size:20px;font-weight:600;margin-top:4px}
+p{margin:0;max-width:68ch}
+section{display:flex;flex-direction:column;gap:16px}
+.eyebrow{font:500 12px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+.lede{font-size:17px;color:var(--muted)}
+header{display:flex;flex-direction:column;gap:14px}
+.meta{font:13px/1.5 var(--mono);color:var(--muted)}
+a{color:var(--accent)}
+code{font:13px var(--mono);background:var(--accent-soft);padding:1px 5px;border-radius:3px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:1px;background:var(--rule);border:1px solid var(--rule)}
+.tile{background:var(--panel);padding:16px 18px;display:flex;flex-direction:column;gap:4px}
+.tile b{font:600 34px/1 var(--display);color:var(--accent);font-variant-numeric:tabular-nums}
+.tile span{font-size:13px;color:var(--muted)}
+.scroll{overflow-x:auto;border:1px solid var(--rule);background:var(--panel)}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:9px 14px;border-bottom:1px solid var(--rule);vertical-align:top}
+th{font:500 11.5px/1.3 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);background:var(--ground)}
+tr:last-child td{border-bottom:0}
+td.n{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+tr.hl td{background:var(--accent-soft);font-weight:600}
+.spec td:first-child{color:var(--muted);width:34%;white-space:nowrap}
+.bars td{white-space:nowrap}
+.bar{display:flex;align-items:center;gap:8px;min-width:210px}
+.bar i{display:block;height:9px;border-radius:1px}
+.bar .a{background:var(--bar-a)} .bar .b{background:var(--bar-b)}
+.bar small{font:12px var(--mono);color:var(--muted);font-variant-numeric:tabular-nums}
+.legend{display:flex;gap:18px;font-size:13px;color:var(--muted);flex-wrap:wrap}
+.legend span::before{content:"";display:inline-block;width:12px;height:9px;margin-right:6px;vertical-align:1px}
+.legend .la::before{background:var(--bar-a)} .legend .lb::before{background:var(--bar-b)}
+.code{position:relative;background:var(--code-bg);color:var(--code-ink);border-radius:4px}
+.code pre{margin:0;padding:18px 18px 18px;overflow-x:auto;font:13px/1.55 var(--mono)}
+.code .c{color:#7F948B}
+.copy{position:absolute;top:8px;right:8px;font:500 12px var(--mono);background:transparent;color:var(--code-ink);border:1px solid #3C4B45;border-radius:3px;padding:4px 10px;cursor:pointer}
+.copy:hover{border-color:var(--code-ink)}
+.copy:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.note{border-left:3px solid var(--warn);background:var(--warn-soft);padding:12px 16px;font-size:14px}
+.note b{color:var(--warn)}
+ul.clean{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:8px;max-width:72ch}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
+.card{background:var(--panel);border:1px solid var(--rule);padding:16px 18px;display:flex;flex-direction:column;gap:8px}
+.card p{font-size:14px}
+footer{font-size:13px;color:var(--muted);border-top:1px solid var(--rule);padding-top:16px}
+@media (max-width:520px){th,td{padding:8px 10px}.tile b{font-size:28px}}
+</style>
+
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">Serving cookbook · 2026-09-22</div>
+  <h1>GLM-5.3-Flash on four CMP 170HX mining cards</h1>
+  <p class="lede">A ~180 GB mixture-of-experts model serving 256k-token contexts at 90–165 tokens/s on four ex-mining GPUs over PCIe Gen2 with no NVLink. This page covers what it does, how it's configured, and how to launch it.</p>
+  <div class="meta">vLLM v0.30.0 fork · PP4 · DFlash2 speculative decoding · TurboQuant fp8 KV · 4× GA100 64 GB</div>
+</header>
+
+<section aria-labelledby="glance">
+  <h2 id="glance">At a glance</h2>
+  <div class="tiles">
+    <div class="tile"><b>1.93M</b><span>tokens of KV cache at 256k context (7.35 full-length requests)</span></div>
+    <div class="tile"><b>~165 t/s</b><span>code generation, single stream (DFlash drafts land well on code)</span></div>
+    <div class="tile"><b>89–95 t/s</b><span>single-user decode on mixed chat, 500–6k token prompts</span></div>
+    <div class="tile"><b>~296 t/s</b><span>aggregate throughput at 32 concurrent requests</span></div>
+    <div class="tile"><b>~43 s</b><span>to prefill a 200,000-token prompt (~4,650 tok/s)</span></div>
+    <div class="tile"><b>21/21</b><span>on our practical bug-hunting suite; 27/30 on a hard review case</span></div>
+  </div>
+</section>
+
+<section aria-labelledby="hw">
+  <h2 id="hw">Hardware and model</h2>
+  <div class="scroll"><table class="spec">
+    <tr><td>GPUs</td><td>4× NVIDIA CMP 170HX (GA100 / SM80, the A100 die), 64 GB each, unlocked driver 610.43.03</td></tr>
+    <tr><td>Interconnect</td><td>PCIe Gen2 x16 per card. No NVLink; NCCL peer-to-peer disabled</td></tr>
+    <tr><td>Model</td><td>GLM-5.3-Flash, AWQ W4A16 (compressed-tensors), 178 GB on disk. 45 layers: 11 sparse-MLA attention (DeepSeek-style indexer, top-2048), 34 linear attention (KDA). 288 routed experts, 8 active</td></tr>
+    <tr><td>Drafter</td><td>GLM-5.3-Flash-DFlash2, 2.2 GB, 7 speculative tokens per step</td></tr>
+    <tr><td>Parallelism</td><td>Pipeline parallel across 4 cards (PP4), layer split 13 / 12 / 11 / 9</td></tr>
+    <tr><td>Software</td><td>vLLM v0.30.0 plus our patch branch <code>glm53-pp4-v0300</code>, CUDA 13.3, Linux 6.8</td></tr>
+  </table></div>
+</section>
+
+<section aria-labelledby="ctx">
+  <h2 id="ctx">Context and KV cache</h2>
+  <p>The context limit is set to 262,144 tokens. The model's native limit is 1M, so higher values are possible at lower concurrency. How many 256k requests fit at once depends on how the KV cache is stored. Two changes today raised it from 2.4 to 7.35:</p>
+  <div class="scroll"><table>
+    <tr><th>KV configuration (256k, DFlash on)</th><th>Cache tokens</th><th>Full-length requests</th></tr>
+    <tr><td>bf16 KV, original layout</td><td class="n">634,124</td><td class="n">2.42</td></tr>
+    <tr><td>TurboQuant fp8 KV, original layout</td><td class="n">791,640</td><td class="n">3.02</td></tr>
+    <tr><td>bf16 KV, private drafter pool</td><td class="n">1,433,053</td><td class="n">5.47</td></tr>
+    <tr class="hl"><td>TurboQuant fp8 KV + private drafter pool (current)</td><td class="n">1,928,026</td><td class="n">7.35</td></tr>
+  </table></div>
+  <div class="grid2">
+    <div class="card">
+      <h3>TurboQuant fp8 KV</h3>
+      <p>The sparse-attention layers store their 512-wide latent as one fp8 byte per value instead of two bf16 bytes, which halves attention cache pages. Ampere can't load e4m3 in Triton, so SM80 stores e5m2 and decodes with a bitcast. The fp8 reads are cheap enough that decode is no slower, and faster in some tests.</p>
+    </div>
+    <div class="card">
+      <h3>Private drafter pool</h3>
+      <p>The DFlash drafter only needs a ~22.8k-token sliding window, but it had been using 89 block IDs per request from the same pool as the main model. It now has its own fixed 3.5 GB pool on the last card, which cut main-pool demand per 256k request from 151 blocks to 62.</p>
+    </div>
+  </div>
+  <p style="font-size:13px;color:var(--muted)">The drafter pool is sized for <code>max-num-seqs 8</code>, so 7.35 is close to the ceiling for this config. Allowing more concurrent sequences would require a larger drafter reservation.</p>
+</section>
+
+<section aria-labelledby="bench">
+  <h2 id="bench">Benchmarks</h2>
+  <p>All runs use temperature 0 against the live server. The grey baseline is the same model and patch branch earlier the same day, with bf16 KV and without the drafter-pool fix.</p>
+
+  <h3>Throughput by concurrency</h3>
+  <div class="legend"><span class="la">Current (TurboQuant + private pool)</span><span class="lb">bf16 baseline</span></div>
+  <div class="scroll"><table class="bars">
+    <tr><th>Concurrent</th><th>Aggregate tokens/s</th></tr>
+    <tr><td class="n">1</td><td><div class="bar"><i class="a" style="width:calc(89.35px*0.6)"></i><small>89</small></div><div class="bar"><i class="b" style="width:calc(79.67px*0.6)"></i><small>80</small></div></td></tr>
+    <tr><td class="n">2</td><td><div class="bar"><i class="a" style="width:calc(107.76px*0.6)"></i><small>108</small></div><div class="bar"><i class="b" style="width:calc(121.54px*0.6)"></i><small>122</small></div></td></tr>
+    <tr><td class="n">4</td><td><div class="bar"><i class="a" style="width:calc(154.17px*0.6)"></i><small>154</small></div><div class="bar"><i class="b" style="width:calc(132.7px*0.6)"></i><small>133</small></div></td></tr>
+    <tr><td class="n">8</td><td><div class="bar"><i class="a" style="width:calc(212.3px*0.6)"></i><small>212</small></div><div class="bar"><i class="b" style="width:calc(249.01px*0.6)"></i><small>249</small></div></td></tr>
+    <tr><td class="n">16</td><td><div class="bar"><i class="a" style="width:calc(275.62px*0.6)"></i><small>276</small></div><div class="bar"><i class="b" style="width:calc(316.52px*0.6)"></i><small>317</small></div></td></tr>
+    <tr><td class="n">32</td><td><div class="bar"><i class="a" style="width:calc(295.78px*0.6)"></i><small>296</small></div><div class="bar"><i class="b" style="width:calc(304.07px*0.6)"></i><small>304</small></div></td></tr>
+  </table></div>
+  <p style="font-size:13px;color:var(--muted)">One run per level with speculative decoding on, so expect ±10% run to run. Concurrency 8–16 came in 13–15% lower than baseline, which is either a real cost of the fp8 dequant at larger batches or noise. A repeat run would tell them apart.</p>
+
+  <h3>Single-stream decode by prompt length</h3>
+  <div class="scroll"><table>
+    <tr><th>Prompt tokens</th><th>Decode t/s (current)</th><th>Decode t/s (baseline)</th><th>Time to first token</th></tr>
+    <tr><td class="n">500</td><td class="n">94.7</td><td class="n">83.9</td><td class="n">0.89 s</td></tr>
+    <tr><td class="n">2,000</td><td class="n">94.1</td><td class="n">93.0</td><td class="n">1.51 s</td></tr>
+    <tr><td class="n">4,000</td><td class="n">92.1</td><td class="n">99.3</td><td class="n">2.53 s</td></tr>
+    <tr><td class="n">6,000</td><td class="n">88.3</td><td class="n">108.8</td><td class="n">2.88 s</td></tr>
+  </table></div>
+
+  <h3>Other measurements</h3>
+  <div class="scroll"><table>
+    <tr><th>Test</th><th>Result</th></tr>
+    <tr><td>Code generation, 2,048 tokens, single stream</td><td class="n">165 t/s</td></tr>
+    <tr><td>Plain decode, no drafter (22k-token answer)</td><td class="n">50.9 t/s</td></tr>
+    <tr><td>200k-token prefill + 32 tokens</td><td class="n">43.1 s, answer correct</td></tr>
+    <tr><td>Needle recall at 30.7k tokens (two facts)</td><td>Both exact</td></tr>
+    <tr><td>Practical debugging suite (zmq, PPLNS, expert, nightmare, HiveOS)</td><td class="n">21 / 21</td></tr>
+    <tr><td>BWA-MEM2 alignment-failure review case, rubric scored</td><td class="n">27 / 30 (bf16: 28)</td></tr>
+    <tr><td>24 concurrent smoke requests</td><td class="n">24 / 24 correct</td></tr>
+    <tr><td>Stability</td><td>Zero GPU faults (Xid) across every boot and test</td></tr>
+  </table></div>
+  <p style="font-size:13px;color:var(--muted)">Speculative acceptance depends on the workload. Code accepts about 5 tokens per step, while the mixed battery averaged about 3.2 of 7.</p>
+</section>
+
+<section aria-labelledby="launch">
+  <h2 id="launch">Launch recipe</h2>
+  <p>This requires our patched vLLM branch; stock vLLM v0.30.0 won't run this model on SM80. The environment variables matter as much as the flags.</p>
+  <div class="code">
+    <button class="copy" type="button" data-target="launch-src" id="copy-launch">Copy</button>
+<pre id="launch-src"><span class="c"># --- environment ---</span>
+export CUDA_DEVICE_ORDER=PCI_BUS_ID
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+export NCCL_P2P_DISABLE=1              <span class="c"># no usable P2P on these cards</span>
+export NCCL_IB_DISABLE=1
+export VLLM_WORKER_MULTIPROC_METHOD=spawn
+export VLLM_PP_LAYER_PARTITION=13,12,11,9   <span class="c"># layers per card; card 0 caps at 13</span>
+export VLLM_GLM5N_SIDECAR_BLOCK_SIZE=256    <span class="c"># drafter KV block size</span>
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False
+export HF_HUB_OFFLINE=1
+
+<span class="c"># --- server ---</span>
+python -m vllm.entrypoints.openai.api_server \
+  --model /models/GLM-5.3-Flash-AWQ-W4A16 \
+  --served-model-name glm53-flash \
+  --pipeline-parallel-size 4 \
+  --max-model-len 262144 \
+  --max-num-seqs 8 \
+  --max-num-batched-tokens 4096 \
+  --gpu-memory-utilization 0.93 \
+  --kv-cache-dtype turboquant_k8v4 \
+  --no-enable-prefix-caching \
+  --disable-custom-all-reduce \
+  --speculative-config '{"method":"dflash","model":"/models/GLM-5.3-Flash-DFlash2","num_speculative_tokens":7,"kv_cache_dtype":"auto"}' \
+  --enable-auto-tool-choice --tool-call-parser glm47 \
+  --reasoning-parser glm45 \
+  --host 0.0.0.0 --port 8002</pre>
+  </div>
+  <p>Cold start takes about 4 minutes, mostly weight load, repacking and CUDA-graph capture. On the first boot, Triton kernel compilation adds several more minutes.</p>
+
+  <h3>Why these settings</h3>
+  <div class="scroll"><table class="spec">
+    <tr><td><code>--kv-cache-dtype turboquant_k8v4</code></td><td>fp8 attention cache. Remove it for bf16 KV at about 26% fewer cache tokens.</td></tr>
+    <tr><td><code>"kv_cache_dtype":"auto"</code> in the drafter config</td><td>Required. No backend runs the drafter's sliding-window attention on a TurboQuant cache, so the drafter stays on bf16.</td></tr>
+    <tr><td><code>--gpu-memory-utilization 0.93</code></td><td>The tested ceiling. 0.95 caused faults.</td></tr>
+    <tr><td>Partition <code>13,12,11,9</code></td><td>Card 0 faults when loading more than 13 MoE layers. Layers 0–2 have dense MLPs, so card 0 carries less weight than its layer count suggests, and card 1 ends up the tightest.</td></tr>
+    <tr><td><code>--disable-custom-all-reduce</code></td><td>The custom all-reduce's BAR1 mappings triggered copy-engine faults on these cards.</td></tr>
+    <tr><td><code>--no-enable-prefix-caching</code></td><td>Required by the private drafter pool and the hybrid KV layout.</td></tr>
+    <tr><td><code>--max-num-seqs 8</code></td><td>Sets the drafter pool size (8 × 89 blocks). Raising it grows that reservation on the last card.</td></tr>
+  </table></div>
+</section>
+
+<section aria-labelledby="use">
+  <h2 id="use">Using it</h2>
+  <p>The server exposes an OpenAI-compatible API. The model always reasons; the reasoning comes back in a separate field.</p>
+  <div class="code">
+    <button class="copy" type="button" data-target="req-src" id="copy-req">Copy</button>
+<pre id="req-src">curl http://HOST:8002/v1/chat/completions -H 'Content-Type: application/json' -d '{
+  "model": "glm53-flash",
+  "messages": [{"role": "user", "content": "What is 17 plus 25?"}],
+  "temperature": 0,
+  "max_tokens": 4096,
+  "include_reasoning": false
+}'</pre>
+  </div>
+  <div class="note"><b>Don't send <code>enable_thinking: false</code>.</b> This checkpoint's chat template ignores it and still starts a reasoning block, but the parser stops separating reasoning from the answer, so you get outputs like <code>17 + 25 = 4242</code>. Use <code>"include_reasoning": false</code> to hide the reasoning. The model still generates it and you still pay for those tokens.</div>
+  <ul class="clean">
+    <li>Leave room for reasoning in <code>max_tokens</code>. On hard review questions the model can reason for 20k+ tokens before it answers.</li>
+    <li>Tool calling works through the <code>glm47</code> parser with the standard OpenAI <code>tools</code> field.</li>
+  </ul>
+</section>
+
+<section aria-labelledby="ops">
+  <h2 id="ops">Operating notes for these cards</h2>
+  <ul class="clean">
+    <li><b>Stop with SIGTERM, never SIGKILL.</b> Killing a worker while it scrubs VRAM can wedge the GPU firmware, and only a reboot recovers it.</li>
+    <li><b>Wait before restarting.</b> After the API server exits, workers can hold VRAM for several more minutes. Relaunch only when <code>nvidia-smi</code> shows no compute processes and the port is free.</li>
+    <li><b>One CUDA workload at a time.</b> Running anything else on the GPUs while serving, even a quick test, risks the same firmware wedge.</li>
+    <li><b>Pin the kernel.</b> The unlocked driver is built for one kernel version, and a kernel update makes the GPUs disappear.</li>
+    <li><b>After a GPU fault (Xid 31)</b>, a full driver-module reload usually clears it. <code>nvidia-smi --gpu-reset</code> does not.</li>
+  </ul>
+</section>
+
+<section aria-labelledby="next">
+  <h2 id="next">What's next</h2>
+  <div class="grid2">
+    <div class="card"><h3>3-bit TurboQuant</h3><p>Rotated, codebook-quantized KV at about 5× compression versus bf16. The kernels are already ported; the next step is validating quality. Expect some decode cost in exchange for more context.</p></div>
+    <div class="card"><h3>Partition retune</h3><p>Card 1 is the tightest because it carries the most expert weight. Shifting a layer, for example to 14/11/11/9, could free more cache.</p></div>
+  </div>
+</section>
+
+<footer>
+  Built on work from promisezackr's glm53-flash-170hx-pp8 (PP8 recipe and patches) and the TurboQuant MLA fork (sparse TQ kernels). The KV and drafter-pool fixes were made in-house and validated on 2026-09-22. Numbers come from a single rig and a single day of runs.
+</footer>
+
+</div>
+
+<script>
+document.querySelectorAll('.copy').forEach(function(btn){
+  btn.addEventListener('click',function(){
+    var el=document.getElementById(btn.dataset.target);
+    var text=el.innerText;
+    function done(msg){btn.textContent=msg;setTimeout(function(){btn.textContent='Copy'},1600);}
+    function fallback(){var r=document.createRange();r.selectNodeContents(el);var s=window.getSelection();s.removeAllRanges();s.addRange(r);done('Selected');}
+    try{navigator.clipboard.writeText(text).then(function(){done('Copied');},fallback);}catch(e){fallback();}
+  });
+});
+</script>

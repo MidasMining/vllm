@@ -1,0 +1,101 @@
+{
+  "version": "2.1",
+  "benchmark": "parallel",
+  "model": "glm53-flash",
+  "api_url": "http://localhost:8002/v1",
+  "engine_info": {
+    "version": "0.30.1.dev1+g3d2c1a121",
+    "detected": true
+  },
+  "timestamp": "20260922_231446",
+  "notes": {
+    "throughput_metric": "completion_tokens_only",
+    "description": "Throughput based on output (completion) tokens / wall time. Prompt tokens excluded. TTFT measured via streaming."
+  },
+  "sequential": {
+    "throughput_toks": 89.02,
+    "avg_latency_s": 4.609,
+    "avg_ttft_s": 0.0,
+    "completion_tokens": 2463,
+    "total_time_s": 27.667
+  },
+  "parallel": [
+    {
+      "concurrency": 1,
+      "throughput_toks": 89.35,
+      "per_request_toks": 89.35,
+      "avg_latency_s": 0.347,
+      "p50_latency_s": 0.347,
+      "p95_latency_s": 0.347,
+      "avg_ttft_s": 0.0991,
+      "p50_ttft_s": 0.0991,
+      "successful": 1,
+      "failed": 0
+    },
+    {
+      "concurrency": 2,
+      "throughput_toks": 107.76,
+      "per_request_toks": 53.88,
+      "avg_latency_s": 1.009,
+      "p50_latency_s": 1.009,
+      "p95_latency_s": 1.475,
+      "avg_ttft_s": 0.1584,
+      "p50_ttft_s": 0.1584,
+      "successful": 2,
+      "failed": 0
+    },
+    {
+      "concurrency": 4,
+      "throughput_toks": 154.17,
+      "per_request_toks": 38.54,
+      "avg_latency_s": 4.849,
+      "p50_latency_s": 4.67,
+      "p95_latency_s": 9.333,
+      "avg_ttft_s": 0.3424,
+      "p50_ttft_s": 0.3423,
+      "successful": 4,
+      "failed": 0
+    },
+    {
+      "concurrency": 8,
+      "throughput_toks": 212.3,
+      "per_request_toks": 26.54,
+      "avg_latency_s": 5.966,
+      "p50_latency_s": 5.588,
+      "p95_latency_s": 12.349,
+      "avg_ttft_s": 0.4832,
+      "p50_ttft_s": 0.5659,
+      "successful": 8,
+      "failed": 0
+    },
+    {
+      "concurrency": 16,
+      "throughput_toks": 275.62,
+      "per_request_toks": 17.23,
+      "avg_latency_s": 14.432,
+      "p50_latency_s": 14.434,
+      "p95_latency_s": 23.096,
+      "avg_ttft_s": 5.8607,
+      "p50_ttft_s": 2.1383,
+      "successful": 16,
+      "failed": 0
+    },
+    {
+      "concurrency": 32,
+      "throughput_toks": 295.78,
+      "per_request_toks": 9.24,
+      "avg_latency_s": 21.365,
+      "p50_latency_s": 19.217,
+      "p95_latency_s": 40.845,
+      "avg_ttft_s": 12.46,
+      "p50_ttft_s": 13.7776,
+      "successful": 32,
+      "failed": 0
+    }
+  ],
+  "peak": {
+    "concurrency": 32,
+    "throughput_toks": 295.78,
+    "speedup_vs_sequential": 3.32
+  }
+}
