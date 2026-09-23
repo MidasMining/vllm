@@ -80,7 +80,7 @@ footer{font-size:13px;color:var(--muted);border-top:1px solid var(--rule);paddin
 <header>
   <div class="eyebrow">Serving cookbook · 2026-09-22</div>
   <h1>GLM-5.3-Flash on four CMP 170HX mining cards</h1>
-  <p class="lede">A ~180 GB mixture-of-experts model serving 256k-token contexts at 90–165 tokens/s on four ex-mining GPUs over PCIe Gen2 with no NVLink. This page covers what it does, how it's configured, and how to launch it.</p>
+  <p class="lede">A ~180 GB mixture-of-experts model serving up to its full 1M-token context on four ex-mining GPUs over PCIe Gen2 with no NVLink, at 90–165 tokens/s on short contexts and about 50 t/s deep in a 1M one. This page covers what it does, how it's configured, and how to launch it.</p>
   <div class="meta">vLLM v0.30.0 fork · PP4 · DFlash2 speculative decoding · TurboQuant fp8 KV · 4× GA100 64 GB</div>
 </header>
 
@@ -91,7 +91,8 @@ footer{font-size:13px;color:var(--muted);border-top:1px solid var(--rule);paddin
     <div class="tile"><b>~165 t/s</b><span>code generation, single stream (DFlash drafts land well on code)</span></div>
     <div class="tile"><b>89–95 t/s</b><span>single-user decode on mixed chat, 500–6k token prompts</span></div>
     <div class="tile"><b>~296 t/s</b><span>aggregate throughput at 32 concurrent requests</span></div>
-    <div class="tile"><b>~43 s</b><span>to prefill a 200,000-token prompt (~4,650 tok/s)</span></div>
+    <div class="tile"><b>1M</b><span>tokens per request, the model's full native context; 3/3 needle recall at 1.04M</span></div>
+    <div class="tile"><b>~43 s</b><span>to prefill a 200,000-token prompt (~4,650 tok/s); ~4.6 min for 1M</span></div>
     <div class="tile"><b>21/21</b><span>on our practical bug-hunting suite; 27/30 on a hard review case</span></div>
   </div>
 </section>
@@ -110,13 +111,14 @@ footer{font-size:13px;color:var(--muted);border-top:1px solid var(--rule);paddin
 
 <section aria-labelledby="ctx">
   <h2 id="ctx">Context and KV cache</h2>
-  <p>The context limit is set to 262,144 tokens. The model's native limit is 1M, so higher values are possible at lower concurrency. How many 256k requests fit at once depends on how the KV cache is stored. Two changes today raised it from 2.4 to 7.35:</p>
+  <p>The model's native limit is 1,048,576 tokens, and the rig runs it at the full 1M (see <a href="#long">Long-context results</a>). The benchmarks below were taken at a 262,144-token limit. How many full-length requests fit at once depends on how the KV cache is stored. Two changes raised it at 256k from 2.4 to 7.35:</p>
   <div class="scroll"><table>
     <tr><th>KV configuration (256k, DFlash on)</th><th>Cache tokens</th><th>Full-length requests</th></tr>
     <tr><td>bf16 KV, original layout</td><td class="n">634,124</td><td class="n">2.42</td></tr>
     <tr><td>TurboQuant fp8 KV, original layout</td><td class="n">791,640</td><td class="n">3.02</td></tr>
     <tr><td>bf16 KV, private drafter pool</td><td class="n">1,433,053</td><td class="n">5.47</td></tr>
-    <tr class="hl"><td>TurboQuant fp8 KV + private drafter pool (current)</td><td class="n">1,928,026</td><td class="n">7.35</td></tr>
+    <tr class="hl"><td>TurboQuant fp8 KV + private drafter pool</td><td class="n">1,928,026</td><td class="n">7.35</td></tr>
+    <tr class="hl"><td>Same, with the limit raised to 1M</td><td class="n">2,639,272</td><td class="n">2.52 at 1M</td></tr>
   </table></div>
   <div class="grid2">
     <div class="card">
@@ -172,6 +174,35 @@ footer{font-size:13px;color:var(--muted);border-top:1px solid var(--rule);paddin
   <p style="font-size:13px;color:var(--muted)">Speculative acceptance depends on the workload. Code accepts about 5 tokens per step, while the mixed battery averaged about 3.2 of 7.</p>
 </section>
 
+<section aria-labelledby="long">
+  <h2 id="long">Long-context results (1M boot)</h2>
+  <p>Launched with <code>--max-model-len 1048576</code>, the model reads, recalls and reasons across its full context. All tests run at temperature 0 with reasoning on.</p>
+
+  <h3>Needle recall, three facts at 10%, 50% and 90% depth</h3>
+  <div class="scroll"><table>
+    <tr><th>Prompt tokens</th><th>Recall</th><th>Time to answer</th></tr>
+    <tr><td class="n">65,490</td><td class="n">3/3</td><td class="n">17.8 s</td></tr>
+    <tr><td class="n">131,025</td><td class="n">3/3</td><td class="n">30.1 s</td></tr>
+    <tr><td class="n">262,098</td><td class="n">3/3</td><td class="n">59.8 s</td></tr>
+    <tr><td class="n">524,242</td><td class="n">3/3</td><td class="n">125.2 s</td></tr>
+    <tr><td class="n">786,386</td><td class="n">3/3</td><td class="n">200.4 s</td></tr>
+    <tr class="hl"><td class="n">1,039,954</td><td class="n">3/3</td><td class="n">281.2 s</td></tr>
+  </table></div>
+
+  <h3>Speed and reasoning at depth</h3>
+  <div class="scroll"><table>
+    <tr><th>Context</th><th>Time to first token</th><th>Decode t/s</th><th>Cross-file code trace</th><th>Cross-reference</th></tr>
+    <tr><td class="n">131k</td><td class="n">28.6 s</td><td class="n">56</td><td class="n">6/6</td><td class="n">4/4</td></tr>
+    <tr><td class="n">524k</td><td class="n">122.9 s</td><td class="n">54</td><td class="n">6/6</td><td class="n">4/4</td></tr>
+    <tr><td class="n">1.04M</td><td class="n">278.1 s</td><td class="n">48</td><td class="n">6/6</td><td class="n">4/4</td></tr>
+  </table></div>
+  <p style="font-size:13px;color:var(--muted)">For the cross-file tests, a mining pool's source files were scattered through operations-log filler. The model had to trace a share from submission to payout across files, and answer four questions whose facts live in different files.</p>
+
+  <h3>Growing conversation</h3>
+  <p>An 11-turn session grew by 45k tokens per turn to 496k. Every turn recalled both the newest fact and one from the first turn, with no looping or degraded output.</p>
+  <div class="note"><b>Every turn re-reads the whole conversation.</b> Prefix caching is off in this configuration, so a follow-up turn waits as long as the first: about 1 minute at 256k, 2 at 512k, 4.6 at 1M. The 11-turn session spent 11.3 minutes in prefill, where reading only the new text would take about 2. Prefix caching for this layout is in progress.</div>
+</section>
+
 <section aria-labelledby="launch">
   <h2 id="launch">Launch recipe</h2>
   <p>This requires our patched vLLM branch; stock vLLM v0.30.0 won't run this model on SM80. The environment variables matter as much as the flags.</p>
@@ -209,6 +240,7 @@ python -m vllm.entrypoints.openai.api_server \
 
   <h3>Why these settings</h3>
   <div class="scroll"><table class="spec">
+    <tr><td><code>--max-model-len</code></td><td>262144 is the benchmarked setting. 1048576 enables the full 1M context and still serves short requests; its throughput under many concurrent mid-size requests hasn't been benchmarked.</td></tr>
     <tr><td><code>--kv-cache-dtype turboquant_k8v4</code></td><td>fp8 attention cache. Remove it for bf16 KV at about 26% fewer cache tokens.</td></tr>
     <tr><td><code>"kv_cache_dtype":"auto"</code> in the drafter config</td><td>Required. No backend runs the drafter's sliding-window attention on a TurboQuant cache, so the drafter stays on bf16.</td></tr>
     <tr><td><code>--gpu-memory-utilization 0.93</code></td><td>The tested ceiling. 0.95 caused faults.</td></tr>
@@ -253,6 +285,7 @@ python -m vllm.entrypoints.openai.api_server \
 <section aria-labelledby="next">
   <h2 id="next">What's next</h2>
   <div class="grid2">
+    <div class="card"><h3>Prefix caching</h3><p>Reuse the previous turn's cache so a follow-up in a long session only reads its new text. This is the biggest remaining win for long, many-turn projects.</p></div>
     <div class="card"><h3>3-bit TurboQuant</h3><p>Rotated, codebook-quantized KV at about 5× compression versus bf16. The kernels are already ported; the next step is validating quality. Expect some decode cost in exchange for more context.</p></div>
     <div class="card"><h3>Partition retune</h3><p>Card 1 is the tightest because it carries the most expert weight. Shifting a layer, for example to 14/11/11/9, could free more cache.</p></div>
   </div>
