@@ -107,7 +107,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh     # provides uv
 
 ```bash
 cd ~
-git clone -b glm53-pp4-v0300 http://<gitea-host>:3000/MidasMining/vllm-glm53.git vllm-glm53-v0300
+git clone -b glm53-pp4-v0300 --single-branch https://github.com/MidasMining/vllm.git vllm-glm53-v0300
 cd vllm-glm53-v0300
 git config user.name you && git config user.email you@example.com   # optional
 
