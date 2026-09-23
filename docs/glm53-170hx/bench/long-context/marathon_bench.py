@@ -9,6 +9,7 @@ Usage: marathon_bench.py OUT_JSONL [speed,xfile,soak]
 """
 
 import json
+import os
 import random
 import sys
 import time
@@ -16,7 +17,7 @@ import urllib.request
 
 import regex as re
 
-sys.path.insert(0, "/home/user/llm-bench")
+sys.path.insert(0, os.environ.get("LLM_BENCH_DIR", "/home/user/llm-bench"))
 from long_context_test import generate_code_files  # noqa: E402
 from transformers import AutoTokenizer  # noqa: E402
 
@@ -26,7 +27,8 @@ URL = "http://localhost:8002/v1/chat/completions"
 DEPTHS = [131072, 524288, 1040000]
 
 tok = AutoTokenizer.from_pretrained(
-    "/mnt/ssd/models/GLM-5.3-Flash-AWQ-W4A16", local_files_only=True
+    os.environ.get("GLM_MODEL_DIR", "/mnt/ssd/models") + "/GLM-5.3-Flash-AWQ-W4A16",
+    local_files_only=True,
 )
 ntok = lambda s: len(tok.encode(s, add_special_tokens=False))  # noqa: E731
 

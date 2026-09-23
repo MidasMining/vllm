@@ -4,7 +4,8 @@ A ~180 GB mixture-of-experts model serving up to its full 1M-token context
 on four ex-mining GPUs over PCIe Gen2 with no NVLink, at 90–165 tokens/s on
 short contexts and about 50 t/s deep in a 1M one. Measured
 2026-09-22 on branch `glm53-pp4-v0300` (vLLM v0.30.0 fork). The same
-content as a styled page is in [`cookbook.html`](cookbook.html).
+content as a styled page is in [`cookbook.html`](cookbook.html). To build
+the rig yourself, follow [INSTALL.md](INSTALL.md).
 
 ## At a glance
 
@@ -209,7 +210,8 @@ a single day of runs.
 
 ## Files in this directory
 
+- `INSTALL.md`: step-by-step replication with exact versions and checks
 - `cookbook.html`: this cookbook as a styled page
-- `run-glm53-pp4.sh`: the launcher used on the rig (`GLM_DFLASH=1 GLM_LEN=262144 GLM_KV_DTYPE=turboquant_k8v4`)
+- `run-glm53-pp4.sh`: the launcher used on the rig (see INSTALL.md section 6)
 - `bench/`: raw decode, parallel and practical-suite JSON for the numbers above; `bench/long-context/` has the 1M needle ladder and marathon battery scripts and results
 - `reports/`: engineering write-ups: TurboQuant port design and validation, deep-prefill Xid 31 fix, drafter-pool fix (brief and report), the `enable_thinking` duplication finding, BWA-MEM2 scoring

@@ -5,6 +5,7 @@
 """Three-needle recall ladder against the GLM server (chat API, temp 0)."""
 
 import json
+import os
 import random
 import sys
 import time
@@ -16,7 +17,8 @@ LEVELS = [int(x) for x in sys.argv[1].split(",")]
 OUT = sys.argv[2]
 
 tok = AutoTokenizer.from_pretrained(
-    "/mnt/ssd/models/GLM-5.3-Flash-AWQ-W4A16", local_files_only=True
+    os.environ.get("GLM_MODEL_DIR", "/mnt/ssd/models") + "/GLM-5.3-Flash-AWQ-W4A16",
+    local_files_only=True,
 )
 
 rng = random.Random(11)
