@@ -4314,7 +4314,7 @@ def test_glm5_private_drafter_projection_and_arena(prefix_caching):
         draft.kv_cache_spec.max_memory_usage_bytes(config)
         // draft.kv_cache_spec.page_size_bytes
     )
-    assert draft.private_num_blocks == (None if prefix_caching else 1 + 8 * required)
+    assert draft.private_num_blocks == 1 + 8 * required
     configs = []
     for rank in (0, 1):
         names = {f"rank{rank}.mla", f"rank{rank}.idx", f"rank{rank}.mamba"}
@@ -4429,3 +4429,104 @@ def test_glm5_quantized_drafter_keeps_shared_pool():
     )
     kv_cache_utils._configure_glm5n_private_pools(config, groups)
     assert groups[-1].private_num_blocks is None
+
+
+def test_private_drafter_prefix_reuse_and_eviction():
+    """Independent pool hashes survive release and evict without aliasing IDs."""
+    full = FullAttentionSpec(
+        block_size=16, num_kv_heads=1, head_size=8, dtype=torch.bfloat16
+    )
+    draft = SlidingWindowSpec(
+        block_size=16,
+        num_kv_heads=1,
+        head_size=8,
+        dtype=torch.bfloat16,
+        sliding_window=32,
+    )
+    cfg = KVCacheConfig(
+        num_blocks=100,
+        kv_cache_tensors=[],
+        kv_cache_groups=[
+            KVCacheGroupSpec(["target"], full),
+            KVCacheGroupSpec(["draft"], draft, private_num_blocks=6),
+        ],
+    )
+    manager = KVCacheManager(
+        cfg,
+        max_model_len=256,
+        scheduler_block_size=16,
+        hash_block_size=16,
+        max_in_flight_tokens=32,
+        enable_caching=True,
+    )
+    a = make_request("source", [1] * 65, block_size=16, hash_fn=sha256)
+    assert manager.allocate_slots(a, 64) is not None
+    manager.cache_blocks(a, 64)
+    manager.free(a)
+    b = make_request("reuse", [1] * 65, block_size=16, hash_fn=sha256)
+    blocks, hit, _ = manager.get_computed_blocks(b)
+    assert hit == 64
+    assert manager.allocate_slots(b, 1, hit, blocks) is not None
+    assert manager.take_kv_cache_block_copies() == ([], [])
+    manager.free(b)
+    # More distinct windows than the private pool can retain.
+    for i in range(2, 8):
+        req = make_request(str(i), [i] * 65, block_size=16, hash_fn=sha256)
+        assert manager.allocate_slots(req, 64) is not None
+        manager.cache_blocks(req, 64)
+        manager.free(req)
+    assert manager.get_computed_blocks(a)[1] == 0
+    assert manager.coordinator.block_pool.get_num_free_blocks() == 99
+    assert manager.coordinator.private_pools[1].get_num_free_blocks() == 5
+    assert manager.reset_prefix_cache()
+
+
+def test_private_drafter_retains_window_at_partial_mamba_checkpoint():
+    """The first reuse must retain the fine tail, without a prior shared junction."""
+    full = FullAttentionSpec(
+        block_size=64, num_kv_heads=1, head_size=8, dtype=torch.bfloat16
+    )
+    mamba = MambaSpec(
+        block_size=64,
+        shapes=((8, 8),),
+        dtypes=(torch.bfloat16,),
+        mamba_cache_mode="align",
+    )
+    draft = SlidingWindowSpec(
+        block_size=16,
+        num_kv_heads=1,
+        head_size=8,
+        dtype=torch.bfloat16,
+        sliding_window=32,
+    )
+    cfg = KVCacheConfig(
+        num_blocks=100,
+        kv_cache_tensors=[],
+        prefix_cache_retention_interval=0,
+        kv_cache_groups=[
+            KVCacheGroupSpec(["target"], full),
+            KVCacheGroupSpec(["state"], mamba),
+            KVCacheGroupSpec(["draft"], draft, private_num_blocks=10),
+        ],
+    )
+    manager = KVCacheManager(
+        cfg,
+        max_model_len=256,
+        scheduler_block_size=64,
+        hash_block_size=16,
+        max_in_flight_tokens=32,
+        enable_caching=True,
+        use_eagle=True,
+    )
+    req = make_request("fine-tail", [1] * 241, block_size=16, hash_fn=sha256)
+    assert manager.coordinator.get_replay_boundaries(req) == (224,)
+    for end in (32, 64, 96, 128, 160, 176, 192, 224, 240, 241):
+        assert manager.allocate_slots(req, end - req.num_computed_tokens) is not None
+        manager.cache_blocks(req, end)
+        req.num_computed_tokens = end
+        _, retained = manager.take_kv_cache_block_copies()
+        manager.block_pool.free_blocks(retained)
+        manager.coordinator.new_step_starts()
+    manager.free(req)
+    sibling = make_request("fine-reuse", [1] * 241, block_size=16, hash_fn=sha256)
+    assert manager.get_computed_blocks(sibling)[1] == 224

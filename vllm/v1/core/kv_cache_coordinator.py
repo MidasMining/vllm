@@ -136,14 +136,21 @@ class KVCacheCoordinator(ABC):
         self.private_pools = {
             i: BlockPool(
                 num_gpu_blocks=group.private_num_blocks,
-                enable_caching=False,
+                enable_caching=enable_caching,
                 hash_block_size=hash_block_size,
             )
             for i, group in enumerate(kv_cache_config.kv_cache_groups)
             if group.private_num_blocks is not None
         }
-        if self.private_pools and enable_caching:
-            raise ValueError("Private drafter pools require prefix caching off")
+        # Worker CoW commands address shared-pool IDs. Private pools may
+        # reuse whole blocks, but must never need a partial-block copy.
+        if enable_caching:
+            for group_id in self.private_pools:
+                spec = kv_cache_config.kv_cache_groups[group_id].kv_cache_spec
+                if hash_block_size % spec.block_size:
+                    raise ValueError(
+                        "Private-pool prefix hits must align to whole blocks"
+                    )
         self.single_type_managers = tuple(
             get_manager_for_kv_cache_spec(
                 kv_cache_spec=kv_cache_group.kv_cache_spec,
@@ -340,6 +347,10 @@ class KVCacheCoordinator(ABC):
             for manager in self.single_type_managers
         )
 
+    @property
+    def _cache_hit_alignment_tokens(self) -> int:
+        return self.scheduler_block_size
+
     def get_replay_boundaries(self, request: Request) -> tuple[int, ...]:
         """Positions a later request replaying this prompt can resume at.
 
@@ -351,12 +362,13 @@ class KVCacheCoordinator(ABC):
         at ``num_tokens - 1`` (its last token is recomputed for logits), a
         longer sibling matches the final aligned block. They differ only on a
         block-aligned prompt, where retaining just the higher one collapses the
-        resend's hit to 0. The alignment is the scheduler block size, not the
-        finer hash granularity, which would over-estimate the reach.
+        resend's hit to 0. Use the actual lookup alignment: hybrid align mode
+        can resume at a partial-block checkpoint, so its sliding-window groups
+        must retain the window at that finer boundary too.
         """
         if not self.eagle_group_ids:
             return (request.num_prompt_tokens - 1,)
-        block = self.scheduler_block_size
+        block = self._cache_hit_alignment_tokens
         resend = (request.num_prompt_tokens - 1) // block * block
         extension = request.num_prompt_tokens // block * block
         return tuple(sorted({max(resend - block, 0), max(extension - block, 0)}))

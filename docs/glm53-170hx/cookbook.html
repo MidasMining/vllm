@@ -200,7 +200,7 @@ footer{font-size:13px;color:var(--muted);border-top:1px solid var(--rule);paddin
 
   <h3>Growing conversation</h3>
   <p>An 11-turn session grew by 45k tokens per turn to 496k. Every turn recalled both the newest fact and one from the first turn, with no looping or degraded output.</p>
-  <div class="note"><b>Every turn re-reads the whole conversation.</b> Prefix caching is off in this configuration, so a follow-up turn waits as long as the first: about 1 minute at 256k, 2 at 512k, 4.6 at 1M. The 11-turn session spent 11.3 minutes in prefill, where reading only the new text would take about 2. Prefix caching for this layout is in progress.</div>
+  <div class="note"><b>Append-only sessions can reuse the previous prompt.</b> The measurements above used caching off. With the hybrid/private-pool fix, the same 11-turn soak takes 144.7 seconds of prefill instead of 679.6, with all fact checks passing. Its final 496k turn falls from 116.6 to 15.3 seconds. Enable <code>--enable-prefix-caching</code> or set <code>GLM_PREFIX_CACHE=1</code> with the launcher. The extra KDA checkpoint reduces reported capacity to 2,569,358 tokens at 1M (−2.65%) or 1,811,176 at 256k (−6.06%); memory utilization remains 0.93 and DFlash retains its private pool.</div>
 </section>
 
 <section aria-labelledby="launch">
@@ -229,7 +229,7 @@ python -m vllm.entrypoints.openai.api_server \
   --max-num-batched-tokens 4096 \
   --gpu-memory-utilization 0.93 \
   --kv-cache-dtype turboquant_k8v4 \
-  --no-enable-prefix-caching \
+  --enable-prefix-caching \
   --disable-custom-all-reduce \
   --speculative-config '{"method":"dflash","model":"/models/GLM-5.3-Flash-DFlash2","num_speculative_tokens":7,"kv_cache_dtype":"auto"}' \
   --enable-auto-tool-choice --tool-call-parser glm47 \
@@ -246,7 +246,7 @@ python -m vllm.entrypoints.openai.api_server \
     <tr><td><code>--gpu-memory-utilization 0.93</code></td><td>The tested ceiling. 0.95 caused faults.</td></tr>
     <tr><td>Partition <code>13,12,11,9</code></td><td>Card 0 faults when loading more than 13 MoE layers. Layers 0–2 have dense MLPs, so card 0 carries less weight than its layer count suggests, and card 1 ends up the tightest.</td></tr>
     <tr><td><code>--disable-custom-all-reduce</code></td><td>The custom all-reduce's BAR1 mappings triggered copy-engine faults on these cards.</td></tr>
-    <tr><td><code>--no-enable-prefix-caching</code></td><td>Required by the private drafter pool and the hybrid KV layout.</td></tr>
+    <tr><td><code>--enable-prefix-caching</code></td><td>Reuses the previous prompt tail in align mode, with the checkpoint capacity cost above.</td></tr>
     <tr><td><code>--max-num-seqs 8</code></td><td>Sets the drafter pool size (8 × 89 blocks). Raising it grows that reservation on the last card.</td></tr>
   </table></div>
 </section>
@@ -285,7 +285,7 @@ python -m vllm.entrypoints.openai.api_server \
 <section aria-labelledby="next">
   <h2 id="next">What's next</h2>
   <div class="grid2">
-    <div class="card"><h3>Prefix caching</h3><p>Reuse the previous turn's cache so a follow-up in a long session only reads its new text. This is the biggest remaining win for long, many-turn projects.</p></div>
+    <div class="card"><h3>Checkpoint capacity</h3><p>Prefix reuse is implemented. Recovering the extra checkpoint slot cost without compromising speculative rollback remains a possible improvement.</p></div>
     <div class="card"><h3>3-bit TurboQuant</h3><p>Rotated, codebook-quantized KV at about 5× compression versus bf16. The kernels are already ported; the next step is validating quality. Expect some decode cost in exchange for more context.</p></div>
     <div class="card"><h3>Partition retune</h3><p>Card 1 is the tightest because it carries the most expert weight. Shifting a layer, for example to 14/11/11/9, could free more cache.</p></div>
   </div>

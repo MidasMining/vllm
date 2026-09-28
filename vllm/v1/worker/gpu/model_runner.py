@@ -795,7 +795,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 block_tables=self.block_tables,
             )
         self.kv_caches = [
-            cache for cache in kv_caches_dict.values() if cache.device == self.device
+            cache
+            for name, cache in kv_caches_dict.items()
+            if cache.device == self.device
+            and name not in self.kv_cache_config.private_pool_layer_names
         ]
         if is_profiling:
             self.kv_connector = NO_OP_KV_CONNECTOR

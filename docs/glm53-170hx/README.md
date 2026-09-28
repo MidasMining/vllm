@@ -114,11 +114,15 @@ Growing conversation: an 11-turn session grew by 45k tokens per turn to
 496k. Every turn recalled both the newest fact and one from the first turn,
 with no looping.
 
-> **Every turn re-reads the whole conversation.** Prefix caching is off in
-> this configuration, so a follow-up turn waits as long as the first: about
-> 1 minute at 256k, 2 at 512k, 4.6 at 1M. The 11-turn session spent 11.3
-> minutes in prefill, where reading only the new text would take about 2.
-> Prefix caching for this layout is in progress.
+> **Append-only sessions can reuse the previous prompt.** The measurements
+> above used prefix caching off. With the hybrid/private-pool caching fix,
+> the same 11-turn soak spends 144.7 seconds in prefill instead of 679.6;
+> its final 496k turn takes 15.3 seconds instead of 116.6. All fact checks pass.
+> Use `--enable-prefix-caching`, or `GLM_PREFIX_CACHE=1` with the launcher.
+> Align mode retains the previous prompt's checkpoint at 256-token granularity
+> and keeps DFlash's bounded private pool. The extra KDA checkpoint reduces
+> reported capacity to 2,569,358 tokens at 1M (2.65% below caching off), or
+> 1,811,176 at 256k (6.06% below). GPU memory utilization stays at 0.93.
 
 ## Launch recipe
 
@@ -144,7 +148,7 @@ python -m vllm.entrypoints.openai.api_server \
   --max-num-batched-tokens 4096 \
   --gpu-memory-utilization 0.93 \
   --kv-cache-dtype turboquant_k8v4 \
-  --no-enable-prefix-caching \
+  --enable-prefix-caching \
   --disable-custom-all-reduce \
   --speculative-config '{"method":"dflash","model":"/models/GLM-5.3-Flash-DFlash2","num_speculative_tokens":7,"kv_cache_dtype":"auto"}' \
   --enable-auto-tool-choice --tool-call-parser glm47 \
@@ -163,7 +167,7 @@ compilation adds several more.
 | `--gpu-memory-utilization 0.93` | Tested ceiling; 0.95 caused faults. |
 | Partition `13,12,11,9` | Card 0 faults loading more than 13 MoE layers. Layers 0–2 have dense MLPs, so card 1 ends up the tightest. |
 | `--disable-custom-all-reduce` | Its BAR1 mappings triggered copy-engine faults on these cards. |
-| `--no-enable-prefix-caching` | Required by the private drafter pool and the hybrid KV layout. |
+| `--enable-prefix-caching` | Reuses the previous prompt tail in align mode; includes the checkpoint capacity cost above. |
 | `--max-num-seqs 8` | Sets the drafter pool size (8 × 89 blocks). |
 
 ## Using it

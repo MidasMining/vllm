@@ -609,6 +609,7 @@ class GPUModelRunner(
         # self.model: nn.Module  # Set after load_model
         # Initialize in initialize_kv_cache
         self.kv_caches: list[torch.Tensor] = []
+        self.core_kv_caches: list[torch.Tensor] = []
         # indexes: [kv_cache_group_id][attn_group]
         self.attn_groups: list[list[AttentionGroup]] = []
         # self.kv_cache_config: KVCacheConfig
@@ -1248,7 +1249,7 @@ class GPUModelRunner(
             self._zero_block_ids(scheduler_output.new_block_ids_to_zero)
         if scheduler_output.kv_cache_block_copies:
             copy_kv_cache_blocks_inplace(
-                self.kv_caches,
+                self.core_kv_caches,
                 self.kv_cache_config.num_blocks,
                 scheduler_output.kv_cache_block_copies,
             )
@@ -6599,6 +6600,7 @@ class GPUModelRunner(
             for i in range(len(self.kv_caches)):
                 self.kv_caches[i] = None  # type: ignore
             self.kv_caches.clear()
+            self.core_kv_caches.clear()
         if hasattr(self, "attn_groups"):
             self.attn_groups.clear()
         if hasattr(self, "kv_cache_config"):
@@ -7386,6 +7388,12 @@ class GPUModelRunner(
             num_attn_module,
             kv_cache_groups=kv_cache_config.kv_cache_groups,
         )
+        self.core_kv_caches = [
+            cache
+            for name, cache in kv_caches.items()
+            if cache.device == self.device
+            and name not in kv_cache_config.private_pool_layer_names
+        ]
         return kv_caches
 
     def maybe_add_kv_sharing_layers_to_kv_cache_groups(

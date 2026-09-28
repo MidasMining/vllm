@@ -1138,12 +1138,11 @@ def _configure_glm5n_private_pools(
     vllm_config: VllmConfig, groups: list[KVCacheGroupSpec]
 ) -> None:
     # Private sidecars are unquantized: core block zeroing must not touch them.
-    # Keep caching and transfer on the existing shared-pool path.
+    # Transfer still requires the shared-pool path.
     spec_config = vllm_config.speculative_config
     if (
         spec_config is None
         or spec_config.method != "dflash"
-        or vllm_config.cache_config.enable_prefix_caching
         or vllm_config.kv_transfer_config is not None
     ):
         return

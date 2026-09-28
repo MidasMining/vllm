@@ -50,6 +50,11 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False  # CMP VMM suspect: res
 # With MTP on, rank 3 also carries the ~16GiB unquantized BF16 MTP block
 # (measured: alloc 36.5->52.6GiB at layers.45.mtp_block) - shift 4 layers off
 # the last stage so KV still fits at util 0.85.
+# Enable after installing the GLM hybrid/private-pool prefix-cache fix.
+PREFIX_CACHE_ARG=--no-enable-prefix-caching
+if [ "${GLM_PREFIX_CACHE:-0}" = "1" ]; then
+  PREFIX_CACHE_ARG=--enable-prefix-caching
+fi
 SPEC_ARGS=()
 # DFlash2 drafter (their prod config): GLM_DFLASH=1. Drafter is 2.3GB on the
 # last rank (no 16GB MTP block), so the no-MTP partition fits; sidecar KV
@@ -82,7 +87,7 @@ fi
   --max-num-seqs "${GLM_SEQS:-8}" \
   --max-num-batched-tokens 4096 \
   --gpu-memory-utilization "${GLM_UTIL:-0.85}" \
-  --no-enable-prefix-caching \
+  "$PREFIX_CACHE_ARG" \
   --disable-custom-all-reduce \
   "${SPEC_ARGS[@]}" "${KV_ARGS[@]}" \
   --enable-auto-tool-choice --tool-call-parser glm47 --reasoning-parser glm45 \

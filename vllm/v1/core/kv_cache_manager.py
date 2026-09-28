@@ -876,7 +876,9 @@ class KVCacheManager:
         """Drain pending copies and return their retained endpoints."""
         pending_copies: list[tuple[KVCacheBlock, KVCacheBlock]] = []
         for mgr in self.coordinator.single_type_managers:
-            pending_copies.extend(mgr.take_pending_cow_copies())
+            manager_copies = mgr.take_pending_cow_copies()
+            assert not manager_copies or mgr.block_pool is self.coordinator.block_pool
+            pending_copies.extend(manager_copies)
         copies = [
             KVCacheBlockCopy(
                 src_block_id=source_block.block_id,
