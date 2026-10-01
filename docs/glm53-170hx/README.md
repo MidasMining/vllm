@@ -17,7 +17,14 @@ the rig yourself, follow [INSTALL.md](INSTALL.md).
 | Aggregate throughput, 32 concurrent | ~296 t/s |
 | Max context per request | **1,048,576 tokens** (native); 3/3 needle recall at 1.04M |
 | 200k-token prefill | ~43 s (~4,650 tok/s); ~4.6 min for 1M |
-| Practical debugging suite / BWA-MEM2 review case | 21/21 / 27 of 30 |
+| Practical debugging suite | 20/21 (corrected, see below) |
+
+> **Corrections, 2026-10-01.** The practical suite was first reported as
+> 21/21: its scorer awarded 2 points on a 1-point case, so the real score is
+> **20/21**. A BWA-MEM2 review score of 27/30 is **withdrawn**: it was
+> self-graded leniently, strict grading of later answers gives 16–17/30, and
+> review found the rubric's reference answer factually wrong (Linux pipe
+> semantics, SAM `@SQ` requirements). It stays out until the rubric is fixed.
 
 ## Hardware and model
 
@@ -190,8 +197,15 @@ curl http://HOST:8002/v1/chat/completions -H 'Content-Type: application/json' -d
 > outputs like `17 + 25 = 4242`. Use `"include_reasoning": false` to hide
 > reasoning (it is still generated and billed).
 
-Leave room for reasoning in `max_tokens`: hard questions can reason for
-20k+ tokens. Tool calling works through the `glm47` parser.
+**Set `reasoning_effort`.** This checkpoint's chat template injects
+`Reasoning Effort: Max` unless the request sends `"reasoning_effort": "low"`
+or `"high"`. At the maximum default the model can spend a 32,000-token budget
+thinking and return no answer: the practical suite scored 3/21 at its original
+budgets and BWA-MEM2 returned nothing, while the same questions at `"low"`
+completed in about 1/13 of the time and passed the practical suite.
+
+Leave room for reasoning in `max_tokens` either way. Tool calling works
+through the `glm47` parser.
 
 ## Operating notes for these cards
 

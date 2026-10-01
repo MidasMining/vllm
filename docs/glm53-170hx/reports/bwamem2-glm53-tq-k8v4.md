@@ -1,5 +1,9 @@
 # BWA-MEM2 case — GLM-5.3-Flash (AWQ-W4A16, PP4 plain + TQ k8v4 KV, 4x CMP 170HX .57)
 
+> **Correction, 2026-10-01:** the 27/30 below was self-graded leniently and is
+> withdrawn. Strict grading of later answers gives 16–17/30, and the rubric's
+> reference answer was found factually wrong. See the README's corrections.
+
 Date: 2026-09-22. temp 0, max_tokens 32000, kv-cache-dtype=turboquant_k8v4
 (TRITON_MLA_SPARSE_TURBOQUANT, e5m2 on SM80), NO spec decode, 131k ctx.
 Completion 21,993 tok in 432s = 50.9 t/s plain decode. finish=stop.

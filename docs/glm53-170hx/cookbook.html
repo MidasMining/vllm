@@ -93,7 +93,7 @@ footer{font-size:13px;color:var(--muted);border-top:1px solid var(--rule);paddin
     <div class="tile"><b>~296 t/s</b><span>aggregate throughput at 32 concurrent requests</span></div>
     <div class="tile"><b>1M</b><span>tokens per request, the model's full native context; 3/3 needle recall at 1.04M</span></div>
     <div class="tile"><b>~43 s</b><span>to prefill a 200,000-token prompt (~4,650 tok/s); ~4.6 min for 1M</span></div>
-    <div class="tile"><b>21/21</b><span>on our practical bug-hunting suite; 27/30 on a hard review case</span></div>
+    <div class="tile"><b>20/21</b><span>on our practical bug-hunting suite (corrected from 21/21; see below)</span></div>
   </div>
 </section>
 
@@ -166,11 +166,11 @@ footer{font-size:13px;color:var(--muted);border-top:1px solid var(--rule);paddin
     <tr><td>Plain decode, no drafter (22k-token answer)</td><td class="n">50.9 t/s</td></tr>
     <tr><td>200k-token prefill + 32 tokens</td><td class="n">43.1 s, answer correct</td></tr>
     <tr><td>Needle recall at 30.7k tokens (two facts)</td><td>Both exact</td></tr>
-    <tr><td>Practical debugging suite (zmq, PPLNS, expert, nightmare, HiveOS)</td><td class="n">21 / 21</td></tr>
-    <tr><td>BWA-MEM2 alignment-failure review case, rubric scored</td><td class="n">27 / 30 (bf16: 28)</td></tr>
+    <tr><td>Practical debugging suite (zmq, PPLNS, expert, nightmare, HiveOS)</td><td class="n">20 / 21</td></tr>
     <tr><td>24 concurrent smoke requests</td><td class="n">24 / 24 correct</td></tr>
     <tr><td>Stability</td><td>Zero GPU faults (Xid) across every boot and test</td></tr>
   </table></div>
+  <div class="note"><b>Corrections, 2026-10-01.</b> The practical suite was first reported as 21/21: its scorer awarded 2 points on a 1-point case, so the real score is 20/21. A BWA-MEM2 review score of 27/30 is withdrawn: it was self-graded leniently, strict grading of later answers gives 16–17/30, and review found the rubric&#39;s reference answer factually wrong. It stays out until the rubric is fixed.</div>
   <p style="font-size:13px;color:var(--muted)">Speculative acceptance depends on the workload. Code accepts about 5 tokens per step, while the mixed battery averaged about 3.2 of 7.</p>
 </section>
 
@@ -200,7 +200,7 @@ footer{font-size:13px;color:var(--muted);border-top:1px solid var(--rule);paddin
 
   <h3>Growing conversation</h3>
   <p>An 11-turn session grew by 45k tokens per turn to 496k. Every turn recalled both the newest fact and one from the first turn, with no looping or degraded output.</p>
-  <div class="note"><b>Append-only sessions can reuse the previous prompt.</b> The measurements above used caching off. With the hybrid/private-pool fix, the same 11-turn soak takes 144.7 seconds of prefill instead of 679.6, with all fact checks passing. Its final 496k turn falls from 116.6 to 15.3 seconds. Enable <code>--enable-prefix-caching</code> or set <code>GLM_PREFIX_CACHE=1</code> with the launcher. The extra KDA checkpoint reduces reported capacity to 2,569,358 tokens at 1M (−2.65%) or 1,811,176 at 256k (−6.06%); memory utilization remains 0.93 and DFlash retains its private pool.</div>
+  <div class="note"><b>Every turn re-reads the whole conversation.</b> Prefix caching is off in this configuration, so a follow-up turn waits as long as the first: about 1 minute at 256k, 2 at 512k, 4.6 at 1M. The 11-turn session spent 11.3 minutes in prefill, where reading only the new text would take about 2. Prefix caching for this layout is in progress.</div>
 </section>
 
 <section aria-labelledby="launch">
@@ -229,7 +229,7 @@ python -m vllm.entrypoints.openai.api_server \
   --max-num-batched-tokens 4096 \
   --gpu-memory-utilization 0.93 \
   --kv-cache-dtype turboquant_k8v4 \
-  --enable-prefix-caching \
+  --no-enable-prefix-caching \
   --disable-custom-all-reduce \
   --speculative-config '{"method":"dflash","model":"/models/GLM-5.3-Flash-DFlash2","num_speculative_tokens":7,"kv_cache_dtype":"auto"}' \
   --enable-auto-tool-choice --tool-call-parser glm47 \
@@ -246,7 +246,7 @@ python -m vllm.entrypoints.openai.api_server \
     <tr><td><code>--gpu-memory-utilization 0.93</code></td><td>The tested ceiling. 0.95 caused faults.</td></tr>
     <tr><td>Partition <code>13,12,11,9</code></td><td>Card 0 faults when loading more than 13 MoE layers. Layers 0–2 have dense MLPs, so card 0 carries less weight than its layer count suggests, and card 1 ends up the tightest.</td></tr>
     <tr><td><code>--disable-custom-all-reduce</code></td><td>The custom all-reduce's BAR1 mappings triggered copy-engine faults on these cards.</td></tr>
-    <tr><td><code>--enable-prefix-caching</code></td><td>Reuses the previous prompt tail in align mode, with the checkpoint capacity cost above.</td></tr>
+    <tr><td><code>--no-enable-prefix-caching</code></td><td>Required by the private drafter pool and the hybrid KV layout.</td></tr>
     <tr><td><code>--max-num-seqs 8</code></td><td>Sets the drafter pool size (8 × 89 blocks). Raising it grows that reservation on the last card.</td></tr>
   </table></div>
 </section>
@@ -265,6 +265,7 @@ python -m vllm.entrypoints.openai.api_server \
 }'</pre>
   </div>
   <div class="note"><b>Don't send <code>enable_thinking: false</code>.</b> This checkpoint's chat template ignores it and still starts a reasoning block, but the parser stops separating reasoning from the answer, so you get outputs like <code>17 + 25 = 4242</code>. Use <code>"include_reasoning": false</code> to hide the reasoning. The model still generates it and you still pay for those tokens.</div>
+  <div class="note"><b>Set <code>reasoning_effort</code>.</b> The chat template injects <code>Reasoning Effort: Max</code> unless a request sends <code>"reasoning_effort": "low"</code> or <code>"high"</code>. At the maximum default the model can spend a 32,000-token budget thinking and return no answer; the same questions at <code>"low"</code> completed in about 1/13 of the time and passed the practical suite.</div>
   <ul class="clean">
     <li>Leave room for reasoning in <code>max_tokens</code>. On hard review questions the model can reason for 20k+ tokens before it answers.</li>
     <li>Tool calling works through the <code>glm47</code> parser with the standard OpenAI <code>tools</code> field.</li>
@@ -285,7 +286,7 @@ python -m vllm.entrypoints.openai.api_server \
 <section aria-labelledby="next">
   <h2 id="next">What's next</h2>
   <div class="grid2">
-    <div class="card"><h3>Checkpoint capacity</h3><p>Prefix reuse is implemented. Recovering the extra checkpoint slot cost without compromising speculative rollback remains a possible improvement.</p></div>
+    <div class="card"><h3>Prefix caching</h3><p>Reuse the previous turn's cache so a follow-up in a long session only reads its new text. This is the biggest remaining win for long, many-turn projects.</p></div>
     <div class="card"><h3>3-bit TurboQuant</h3><p>Rotated, codebook-quantized KV at about 5× compression versus bf16. The kernels are already ported; the next step is validating quality. Expect some decode cost in exchange for more context.</p></div>
     <div class="card"><h3>Partition retune</h3><p>Card 1 is the tightest because it carries the most expert weight. Shifting a layer, for example to 14/11/11/9, could free more cache.</p></div>
   </div>
